@@ -18,6 +18,8 @@ RUN pip install -U pandas==1.3.3
 RUN pip install -U matplotlib==3.4.2
 RUN pip install -U scipy==1.7.1
 RUN pip install -U scikit-learn==1.0
+RUN pip install h5py
+RUN pip install tables
 
 RUN pip install https://download.pytorch.org/whl/cu102/torch-1.5.0-cp38-cp38-linux_x86_64.whl
 RUN pip install https://download.pytorch.org/whl/cu102/torchvision-0.6.0-cp38-cp38-linux_x86_64.whl
