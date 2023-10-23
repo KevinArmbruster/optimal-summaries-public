@@ -984,6 +984,9 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
             epochs (int): number of epochs to train
         """
         
+        rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=epochs)
+        rtpt.start()
+        
         self.loss_func = custom_bce_horseshoe
         self.train_losses = []
         self.val_losses = []
@@ -1053,6 +1056,8 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
 
                 # update all parameters
                 self.optimizer.step()
+        
+            rtpt.step(subtitle=f"loss={loss:2.2f}")
                 
 
 class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
