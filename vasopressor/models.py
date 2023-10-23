@@ -23,6 +23,12 @@ from time import sleep
 
 from itertools import combinations
 
+
+from rtpt import RTPT
+import random
+import time
+
+
 def add_all_parsers(p, input_dim, changing_dim, str_type = 'linear'):
     if str_type == 'linear':
         p.add_shape(str(str_type) + '_time_23_', input_dim)
@@ -1180,6 +1186,9 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             epochs (int): number of epochs to train
         """
         
+        rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=epochs)
+        rtpt.start()
+        
         self.loss_func = custom_bce_horseshoe
         self.train_losses = []
         self.val_losses = []
@@ -1258,4 +1267,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                             'train_losses': self.train_losses,
                             'val_losses': self.val_losses,
                             }, save_model_path)
+            
+            
+            rtpt.step(subtitle=f"loss={loss:2.2f}")
                 

@@ -12,7 +12,7 @@ changing_vars = [
  'spontaneousrr',
  'spo2',
  'temp',
- 'urine',
+# 'urine', # not found in mimic
  'bun',
  'magnesium',
  'platelets',
@@ -114,3 +114,7 @@ def inverse_feature_preprocessing(x, feat_name):
     
     return var * x + mu
     
+def myPreprocessed(x_filepath, y_filepath):
+    X = np.load(x_filepath)
+    y = np.load(y_filepath)
+    return X, y, changing_vars
