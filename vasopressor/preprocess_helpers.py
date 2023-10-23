@@ -95,9 +95,6 @@ def preprocess_MIMIC_data(x_filepath, y_filepath, y_2d=True):
             
     return X_np, Y_logits, changing_vars, data_cols
 
-# Load mean and variance arrays.
-mu_dict = pickle.load( open( "data/mu_dict_vasopressor_LOS_6_600.p", "rb" ) )
-var_dict = pickle.load( open( "data/var_dict_vasopressor_LOS_6_600.p", "rb" ) ) 
 
 def inverse_feature_preprocessing(x, feat_name):
     """
@@ -108,6 +105,9 @@ def inverse_feature_preprocessing(x, feat_name):
         x (float): the quantity to be transformed
         feat_name (str): the name of the feature to be transformed
     """
+    # Load mean and variance arrays.
+    mu_dict = pickle.load( open( "data/mu_dict_vasopressor_LOS_6_600.p", "rb" ) )
+    var_dict = pickle.load( open( "data/var_dict_vasopressor_LOS_6_600.p", "rb" ) ) 
     
     mu = mu_dict[feat_name]
     var = var_dict[feat_name]
