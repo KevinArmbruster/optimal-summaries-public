@@ -1,46 +1,43 @@
-# FROM continuumio/miniconda3:latest
-FROM docker pull nvidia/cuda:11.8.0-runtime-centos7
+FROM pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime
 
-WORKDIR /opt/workdir
-RUN git clone https://github.com/dtak/optimal-summaries-public.git
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get -y upgrade && \
+    apt-get install -y git && \
+    apt-get install -y curl && \
+    apt-get install -y wget 
+    # && \
+    # apt-get install -y software-properties-common && \
+    # add-apt-repository ppa:deadsnakes/ppa && \
+    # apt-get install -y python3.8
 
-# manually install cuda
-# RUN apt-get update &&
-#     apt-get -y upgrade &&
-#     apt-get -y install libxml2 &&
-#     apt-get -y install build-essential &&
-#     apt-get -y install 
-# RUN wget https://developer.download.nvidia.com/compute/cuda/10.2/Prod/local_installers/cuda_10.2.89_440.33.01_linux.run
-# RUN sh cuda_10.2.89_440.33.01_linux.run
 
-RUN mkdir -p miniconda3
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda3/miniconda.sh
-RUN bash miniconda3/miniconda.sh -b -u -p miniconda3
-RUN rm -rf miniconda3/miniconda.sh
-RUN source miniconda3/bin/activate && conda init
+WORKDIR /workdir
 
-RUN conda create -n optimal-summaries python=3.8.5 ipython notebook
+RUN git clone https://github.com/KevinArmbruster/optimal-summaries-public.git
+RUN git config --global user.name "Kevin Armbruster"
+RUN git config --global user.email "KevinArmbruster2013@gmail.com"
 
-# SHELL ["conda", "run", "-n", "optimal-summaries", "/bin/bash", "-c"]
 
-# RUN conda install cudatoolkit=10.2
-
-RUN pip install -U numpy==1.21.2
-RUN pip install -U pandas==1.3.3
-RUN pip install -U matplotlib==3.4.2
-RUN pip install -U scipy==1.7.1
-RUN pip install -U scikit-learn==1.0
+RUN pip install --upgrade pip
+RUN pip install ipython notebook
+RUN pip install numpy
+RUN pip install pandas
+RUN pip install matplotlib
+RUN pip install scipy
+RUN pip install scikit-learn
 RUN pip install h5py
 RUN pip install tables
-
-RUN pip install https://download.pytorch.org/whl/cu102/torch-1.5.0-cp38-cp38-linux_x86_64.whl
-RUN pip install https://download.pytorch.org/whl/cu102/torchvision-0.6.0-cp38-cp38-linux_x86_64.whl
-
 RUN pip install rtpt
 RUN pip install tqdm
 
-RUN echo "conda activate optimal-summaries" >> ~/.bashrc
-RUN conda config --set auto_activate_base false
+# RUN echo "conda activate optimal-summaries" >> ~/.bashrc
+# RUN conda config --set auto_activate_base false
+
 
 #EXPOSE 8090
 ENTRYPOINT ["top", "-b"]
+
+# SETUP INSTRUCTIONS
+# docker build -t optimal-summaries-env .
+# docker run --name optimal-summaries-env3 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data -d optimal-summaries-env
