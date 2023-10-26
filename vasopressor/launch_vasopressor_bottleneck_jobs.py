@@ -53,59 +53,70 @@ os.system(f"mkdir -p {save_dir}")
 
 def launch_job(exp, time_limit=None, mem_limit=None):
 
-  job_command = "python3 -u gpu_vasopressor_bottleneck_finetune.py"
+    job_command = "python3 -u gpu_vasopressor_bottleneck.py"
 
-  for k, v in exp.items():
-    job_command += f" --{k}={v}"
+    for k, v in exp.items():
+        job_command += f" --{k}={v}"
 
-  out_file = os.path.join(save_dir, 'job-%j.out')
-  err_file = os.path.join(save_dir, 'job-%j.err')
-  slurm_file = os.path.join(save_dir, 'job.slurm')
+    os.system(job_command)
 
-  slurm_command = slurm_template.format(
-    job_command=job_command,
-    out_file=out_file,
-    err_file=err_file)
-  with open(slurm_file, "w") as f: f.write(slurm_command)
+    # out_file = os.path.join(save_dir, 'job-%j.out')
+    # err_file = os.path.join(save_dir, 'job-%j.err')
+    # slurm_file = os.path.join(save_dir, 'job.slurm')
 
-  os.system("cat {} | sbatch".format(slurm_file))
+    # slurm_command = slurm_template.format(
+    # job_command=job_command,
+    # out_file=out_file,
+    # err_file=err_file)
+    # with open(slurm_file, "w") as f: f.write(slurm_command)
+
+    # os.system("cat {} | sbatch".format(slurm_file))
 
 # Run experiments with randomly sampled hyperparameters.
 arr_opt_lr = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
 arr_opt_weight_decay = [0, 1e-5, 1e-4, 1e-3]
+arr_l1_lambda = [0, 1e-3]
+arr_cos_sim_lambda = [0, 1e-2]
 
 num_epochs = 1000
 save_every = 10
+N_experiments = 1
 
-dir_path = '/n/home07/carissawu/optimal-summaries/vasopressor/models/LOS-6-600/cos-sim/top-k'
+dir_path = "/workdir/optimal-summaries-public/vasopressor/models/LOS-6-600/cos-sim"
 if not os.path.isdir(dir_path):
     os.makedirs(dir_path)
 
-for r in range(1,11):
-    for c in range(1,5):
+for r in range(1,2):
+    for c in range(4,5):
+        filename = "vasopressor_bottleneck_r{}_c{}_gridsearch".format(r, c)
         # Write hyperparameters to csv file
         fields = ['num_concepts', 'opt_lr', 'opt_weight_decay', 'l1_lambda', 'cos_sim_lambda','test auc']
         with open('{file_path}.csv'.format(file_path=os.path.join(dir_path, filename)), 'w+') as csvfile: 
             # creating a csv writer object 
             csvwriter = csv.writer(csvfile) 
             csvwriter.writerow(fields)
-        random.seed(1)
+            
+        random.seed(r)
         for n in range(N_experiments):
             # Create exp dictionary d by randomly sampling from each of the arrays.
             for lr in arr_opt_lr:
                 for wd in arr_opt_weight_decay:
-                    d = {}
+                    for l1 in arr_l1_lambda:
+                        for cs in arr_cos_sim_lambda:
+                            d = {}
 
-                    d['num_concepts'] = c
-                    d['split_random_state'] = r
-                    d['num_epochs'] = num_epochs
-                    d['save_every'] = save_every
+                            d['num_concepts'] = c
+                            d['split_random_state'] = r
+                            d['num_epochs'] = num_epochs
+                            d['save_every'] = save_every
 
-                    d['opt_lr'] = lr
-                    d['opt_weight_decay'] = wd
+                            d['opt_lr'] = lr
+                            d['opt_weight_decay'] = wd
+                            
+                            d['l1_lambda'] = l1
+                            d['cos_sim_lambda'] = cs
 
-                    d['output_dir'] = 'models/LOS-6-600/no-reg'
-                    d['model_output_name'] = 'models/LOS-6-600/no-reg/bottleneck_r' + str(r) + '_c' + str(d['num_concepts']) + '_optlr_' + str(d['opt_lr']) + '_optwd_' + str(d['opt_weight_decay']) + '.pt'
-
-                    launch_job(d)
-
+                            d['output_dir'] = 'models/LOS-6-600/cos-sim'
+                            d['model_output_name'] = 'models/LOS-6-600/cos-sim/bottleneck_r' + str(r) + '_c' + str(d['num_concepts']) + '_optlr_' + str(d['opt_lr']) + '_optwd_' + str(d['opt_weight_decay']) + '_l1lambda_' + str(d['l1_lambda']) + '_cossimlambda_' + str(d['cos_sim_lambda']) + '.pt'
+                            print(d)
+                            launch_job(d)

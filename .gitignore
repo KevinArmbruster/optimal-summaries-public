@@ -1,3 +1,8 @@
 .idea
 *.p
 *.npy
+*.csv
+*.pt
+*.pyc
+*.out
+*.txt

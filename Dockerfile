@@ -30,6 +30,7 @@ RUN pip install h5py
 RUN pip install tables
 RUN pip install rtpt
 RUN pip install tqdm
+RUN pip install seaborn squarify imblearn
 
 # RUN echo "conda activate optimal-summaries" >> ~/.bashrc
 # RUN conda config --set auto_activate_base false

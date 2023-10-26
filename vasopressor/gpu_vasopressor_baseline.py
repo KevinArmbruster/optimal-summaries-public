@@ -54,7 +54,7 @@ parser.add_argument('--opt_lr', type=float, default=1e-4)
 parser.add_argument('--opt_weight_decay', type=float, default=0.)
 
 parser.add_argument('--output_dir', type=str, default='')
-parser.add_argument('--model_output_name', type=str, default='')
+parser.add_argument('--model_output_name', type=str, default='baseline')
 parser.add_argument('--num_epochs', type=int, default=1000)
 parser.add_argument('--save_every', type=int, default=100)
 
@@ -65,7 +65,7 @@ FLAGS = parser.parse_args()
 path = FLAGS.output_dir or f"/tmp/{int(time.time())}"
 os.system('mkdir -p ' + path)
 
-device = torch.device("cuda:0")  # Uncomment this to run on GPU
+# device = torch.device("cuda:0")  # Uncomment this to run on GPU
 torch.cuda.get_device_name(0)
 torch.cuda.is_available()
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
@@ -103,13 +103,13 @@ y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
 batch_size = FLAGS.batch_size
 
 train_dataset = TensorDataset(X_train_pt, y_train_pt)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 val_dataset = TensorDataset(X_val_pt, y_val_pt)
-val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0)
+val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 input_dim = X_np[0].shape[1]
 changing_dim = len(changing_vars)

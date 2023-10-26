@@ -37,10 +37,10 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--split_random_state', type=int, default=0)
 parser.add_argument('--batch_size', type=int, default=256)
-parser.add_argument('--num_concepts', type=int, default='1')
+parser.add_argument('--num_concepts', type=int, default='4')
 # parser.add_argument('--zero_weight',type=bool, default=False)
 parser.add_argument('--top_k',type=str, default='')
-parser.add_argument('--top_k_num',type=int, default='')
+parser.add_argument('--top_k_num',type=int, default=0)
 
 parser.add_argument('--init_cutoffs', type=str, default='init_cutoffs_to_zero')
 parser.add_argument('--cutoff_times_init_values_filepath', type=str, default='')
@@ -56,7 +56,7 @@ parser.add_argument('--l1_lambda', type=float, default=0.)
 parser.add_argument('--cos_sim_lambda', type=float, default=0.)
 
 parser.add_argument('--output_dir', type=str, default='')
-parser.add_argument('--model_output_name', type=str, default='test')
+parser.add_argument('--model_output_name', type=str, default='bottleneck')
 parser.add_argument('--num_epochs', type=int, default=1000)
 parser.add_argument('--save_every', type=int, default=100)
 
@@ -67,7 +67,7 @@ FLAGS = parser.parse_args()
 path = FLAGS.output_dir or f"/tmp/{int(time.time())}"
 os.system('mkdir -p ' + path)
 
-device = torch.device("cuda:0")  # Uncomment this to run on GPU
+# device = torch.device("cuda:0")  # Uncomment this to run on GPU
 torch.cuda.get_device_name(0)
 torch.cuda.is_available()
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
@@ -103,13 +103,13 @@ y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
 batch_size = FLAGS.batch_size
 
 train_dataset = TensorDataset(X_train_pt, y_train_pt)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 val_dataset = TensorDataset(X_val_pt, y_val_pt)
-val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0)
+val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 input_dim = X_np[0].shape[1]
 changing_dim = len(changing_vars)
@@ -182,8 +182,8 @@ score = roc_auc_score(np.array(y_test)[:, 1], y_hat_test)
 
 
 # write results to csv
-filename = "vasopressor_bottleneck_r{}_c{}_topkfinetune".format(FLAGS.split_random_state,FLAGS.num_concepts)
-dir_path = "insert_dir_name"
+filename = "vasopressor_bottleneck_r{}_c{}_gridsearch".format(FLAGS.split_random_state,FLAGS.num_concepts)
+dir_path = "/workdir/optimal-summaries-public/vasopressor/models/LOS-6-600/cos-sim"
 with open('{file_path}.csv'.format(file_path=os.path.join(dir_path, filename)), 'a+') as csvfile: 
     # creating a csv writer object 
     csvwriter = csv.writer(csvfile) 

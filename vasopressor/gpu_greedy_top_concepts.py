@@ -22,7 +22,7 @@ from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 from custom_losses import custom_bce_horseshoe
 from param_initializations import *
 
-from preprocess_helpers import preprocess_MIMIC_data
+from preprocess_helpers import myPreprocessed
 
 import torch
 import torch.nn as nn
@@ -50,13 +50,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--split_random_state', type=int, default=0)
 FLAGS = parser.parse_args()
 
-device = torch.device("cuda:0")  # Uncomment this to run on GPU
+# device = torch.device("cuda:0")  # Uncomment this to run on GPU
 torch.cuda.get_device_name(0)
 torch.cuda.is_available()
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 # prep data
-X_np, Y_logits, changing_vars, data_cols = preprocess_MIMIC_data('data/X_vasopressor_LOS_6_600.p', 'data/y_vasopressor_LOS_6_600.p')
+X_np, Y_logits, changing_vars = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
 
 # train-test-split
 torch.set_printoptions(sci_mode=False)
