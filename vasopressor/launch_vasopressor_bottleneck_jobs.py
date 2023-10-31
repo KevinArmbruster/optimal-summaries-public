@@ -75,8 +75,8 @@ def launch_job(exp, time_limit=None, mem_limit=None):
 # Run experiments with randomly sampled hyperparameters.
 arr_opt_lr = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
 arr_opt_weight_decay = [0, 1e-5, 1e-4, 1e-3]
-arr_l1_lambda = [0, 1e-3]
-arr_cos_sim_lambda = [0, 1e-2]
+arr_l1_lambda = [1e-3]
+arr_cos_sim_lambda = [1e-2]
 
 num_epochs = 1000
 save_every = 10
@@ -86,7 +86,7 @@ dir_path = "/workdir/optimal-summaries-public/vasopressor/models/LOS-6-600/cos-s
 if not os.path.isdir(dir_path):
     os.makedirs(dir_path)
 
-for r in range(1,2):
+for r in range(1,3):
     for c in range(4,5):
         filename = "vasopressor_bottleneck_r{}_c{}_gridsearch".format(r, c)
         # Write hyperparameters to csv file

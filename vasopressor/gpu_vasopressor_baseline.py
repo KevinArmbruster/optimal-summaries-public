@@ -32,7 +32,7 @@ import torch.optim as optim
 from torch.nn.functional import binary_cross_entropy_with_logits
 
 # X_np, Y_logits, changing_vars, data_cols = preprocess_MIMIC_data('data/X_vasopressor_LOS_6_600.p', 'data/y_vasopressor_LOS_6_600.p')
-X_np, Y_logits, changing_vars = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
+X_np, Y_logits, changing_vars, _ = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
 
 parser = argparse.ArgumentParser()
 

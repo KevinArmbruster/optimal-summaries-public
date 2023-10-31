@@ -9,6 +9,7 @@ import pandas as pd
 import pickle
 import torch
 import random
+from tqdm import tqdm
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
@@ -34,20 +35,15 @@ from torch.autograd import Variable
 
 def tensor_wrap(x, klass=torch.Tensor):
     return x if 'torch' in str(type(x)) else klass(x)
-        
+
 def getAUC(model, X_test, y_test):
     # get results of forward, do AUROC
-    y_hat_test = []
-    for pat in X_test:
-        # batch size of 1
-        x = tensor_wrap([pat]).cuda()
-        y_hat_test.append(model.sigmoid(model.forward(x))[:,1].item())
-    score = roc_auc_score(np.array(y_test)[:, 1], y_hat_test)
-    
+    y_hat_test = model.sigmoid(model.forward(X_test))[:,1].cpu().detach()
+    score = roc_auc_score(y_test[:, 1], y_hat_test)
     return score
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--split_random_state', type=int, default=0)
+parser.add_argument('--split_random_state', type=int, default=1)
 FLAGS = parser.parse_args()
 
 # device = torch.device("cuda:0")  # Uncomment this to run on GPU
@@ -56,7 +52,7 @@ torch.cuda.is_available()
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 # prep data
-X_np, Y_logits, changing_vars = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
+X_np, Y_logits, changing_vars, _ = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
 
 # train-test-split
 torch.set_printoptions(sci_mode=False)
@@ -65,7 +61,7 @@ X_train, X_test, y_train, y_test = train_test_split(X_np, Y_logits, test_size = 
 # train-val split
 X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size = 0.20, random_state = FLAGS.split_random_state, stratify = y_train)
 
-X_pt = Variable(tensor_wrap(X_np)).cuda()
+# X_pt = Variable(tensor_wrap(X_np)).cuda()
 
 pos_prop = np.mean(np.array(Y_logits)[:, 1])
 
@@ -79,32 +75,33 @@ y_val_pt = Variable(tensor_wrap(y_val, torch.FloatTensor)).cuda()
 
 X_test_pt = Variable(tensor_wrap(X_test)).cuda()
 y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
+y_test_roc = y_test_pt.data.cpu().detach()
 
 batch_size = 256
 
 train_dataset = TensorDataset(X_train_pt, y_train_pt)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 val_dataset = TensorDataset(X_val_pt, y_val_pt)
-val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0)
+val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
 input_dim = X_np[0].shape[1]
 changing_dim = len(changing_vars)
 
+num_concepts = 4
 # get top features for a set number of concepts
 topkinds = []
-with open('models/LOS-6-600/cos-sim/top-k/topkindsr{}c8.csv'.format(FLAGS.split_random_state), mode ='r')as file:
+with open('./models/LOS-6-600/cos-sim/top-k/topkindsr{}c{}.csv'.format(FLAGS.split_random_state, num_concepts), mode ='r')as file:
     # reading the CSV file
     csvFile = csv.reader(file)
     for row in csvFile:
         topkinds.append(np.array(list(map(int, row))))
 
 # run experiment
-num_concepts = 8
-file = open('./models/LOS-6-600/cos-sim/vasopressor_bottleneck_r{}_c{}_gridsearch.csv'.format(FLAGS.split_random_state,num_concepts))
+file = open('./models/LOS-6-600/cos-sim/vasopressor_bottleneck_r{}_c{}_gridsearch.csv'.format(FLAGS.split_random_state, num_concepts))
 csvreader = csv.reader(file)
 header = next(csvreader)
 bottleneck_row = []
@@ -134,7 +131,7 @@ logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_di
 logregbottleneck.cuda()
 set_seed(FLAGS.split_random_state)
 logregbottleneck.fit(train_loader, val_loader, p_weight, 
-                     save_model_path = "./models/LOS-6-600/cos-sim/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1_lambda_{}_cossim_lambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
+                     save_model_path = "./models/LOS-6-600/cos-sim/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1lambda_{}_cossimlambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
                      epochs=10, 
                      save_every_n_epochs=10)
 
@@ -143,20 +140,21 @@ condition = torch.zeros(logregbottleneck.model.bottleneck.weight.shape, dtype=to
 best_aucs = []
 best_auc_inds = []
 best_auc_concepts = []
-for i in range(10*num_concepts):
+for i in tqdm(range(10*num_concepts)):
     best_auc = 0
     best_auc_ind = -1
     best_auc_concept = -1
+    temp = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.clone().detach())
+    
     for c in range(num_concepts):
         for ind in topkinds[c]:
             # add 1 feature to test AUC
             if not condition[c][ind]:
                 condition[c][ind]=True
-                temp = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.clone().detach())
                 logregbottleneck.model.bottleneck.weight = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.where(condition, torch.tensor(0.0).cuda()))
 
                 # get AUC with added feature
-                curr_auc = getAUC(logregbottleneck.model,X_test,y_test)
+                curr_auc = getAUC(logregbottleneck.model, X_test_pt, y_test_roc)
                 if (curr_auc > best_auc):
                     best_auc = curr_auc
                     best_auc_ind = ind
@@ -179,5 +177,5 @@ with open(filename, 'w') as csvfile:
     csvwriter = csv.writer(csvfile)
     csvwriter.writerow(["Best AUC", "Best AUC Concept #", "Best AUC ind #"])
     # writing the data rows 
-    for row in zip(best_aucs,best_auc_concepts,best_auc_inds):
+    for row in zip(best_aucs, best_auc_concepts, best_auc_inds):
         csvwriter.writerow(list(row))

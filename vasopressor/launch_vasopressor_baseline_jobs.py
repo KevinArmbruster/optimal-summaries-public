@@ -52,22 +52,24 @@ os.system(f"mkdir -p {save_dir}")
 
 def launch_job(exp, time_limit=None, mem_limit=None):
 
-  job_command = "python3 -u gpu_vasopressor_baseline.py"
+    job_command = "python3 -u gpu_vasopressor_baseline.py"
 
-  for k, v in exp.items():
-    job_command += f" --{k}={v}"
+    for k, v in exp.items():
+        job_command += f" --{k}={v}"
 
-  out_file = os.path.join(save_dir, 'job-%j.out')
-  err_file = os.path.join(save_dir, 'job-%j.err')
-  slurm_file = os.path.join(save_dir, 'job.slurm')
+    os.system(job_command)
 
-  slurm_command = slurm_template.format(
-    job_command=job_command,
-    out_file=out_file,
-    err_file=err_file)
-  with open(slurm_file, "w") as f: f.write(slurm_command)
+    # out_file = os.path.join(save_dir, 'job-%j.out')
+    # err_file = os.path.join(save_dir, 'job-%j.err')
+    # slurm_file = os.path.join(save_dir, 'job.slurm')
 
-  os.system("cat {} | sbatch".format(slurm_file))
+    # slurm_command = slurm_template.format(
+    # job_command=job_command,
+    # out_file=out_file,
+    # err_file=err_file)
+    # with open(slurm_file, "w") as f: f.write(slurm_command)
+
+    # os.system("cat {} | sbatch".format(slurm_file))
 
 # Run experiments with randomly sampled hyperparameters.
 arr_alpha = [0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
@@ -83,7 +85,7 @@ save_every = 10
 
 N_experiments = 30
 
-dir_path = '/n/home07/carissawu/optimal-summaries/vasopressor/models/LOS-6-600/baseline/'
+dir_path = './models/LOS-6-600/baseline/'
 if not os.path.isdir(dir_path):
     os.makedirs(dir_path)
 

@@ -117,4 +117,5 @@ def inverse_feature_preprocessing(x, feat_name):
 def myPreprocessed(x_filepath, y_filepath):
     X = np.load(x_filepath)
     y = np.load(y_filepath)
-    return X, y, changing_vars
+    column_names = np.load("/workdir/optimal-summaries-public/vasopressor-column_names.npy", allow_pickle=True)
+    return X, y, changing_vars, column_names

@@ -47,29 +47,21 @@ if len(FLAGS.timestamp) > 0:
 else:
     timestamp = int(time.time())
 
-save_dir = "insert_dir_name"
-os.system(f"mkdir -p {save_dir}")
+# save_dir = "insert_dir_name"
+# os.system(f"mkdir -p {save_dir}")
+
 
 def launch_job(exp, time_limit=None, mem_limit=None):
 
-  job_command = "python3 -u gpu_greedy_top_concepts.py"
+    job_command = "python3 -u gpu_greedy_top_concepts.py"
 
-  for k, v in exp.items():
-    job_command += f" --{k}={v}"
+    for k, v in exp.items():
+        job_command += f" --{k}={v}"
 
-  out_file = os.path.join(save_dir, 'job-%j.out')
-  err_file = os.path.join(save_dir, 'job-%j.err')
-  slurm_file = os.path.join(save_dir, 'job.slurm')
+    os.system(job_command)
 
-  slurm_command = slurm_template.format(
-    job_command=job_command,
-    out_file=out_file,
-    err_file=err_file)
-  with open(slurm_file, "w") as f: f.write(slurm_command)
 
-  os.system("cat {} | sbatch".format(slurm_file))
-
-for r in range(1,4):
+for r in range(1,3):
     d = {}
     d['split_random_state'] = r
     launch_job(d)
