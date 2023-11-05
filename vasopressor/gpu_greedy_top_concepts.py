@@ -75,7 +75,6 @@ y_val_pt = Variable(tensor_wrap(y_val, torch.FloatTensor)).cuda()
 
 X_test_pt = Variable(tensor_wrap(X_test)).cuda()
 y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
-y_test_roc = y_test_pt.data.cpu().detach()
 
 batch_size = 256
 
@@ -154,7 +153,7 @@ for i in tqdm(range(10*num_concepts)):
                 logregbottleneck.model.bottleneck.weight = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.where(condition, torch.tensor(0.0).cuda()))
 
                 # get AUC with added feature
-                curr_auc = getAUC(logregbottleneck.model, X_test_pt, y_test_roc)
+                curr_auc = getAUC(logregbottleneck.model, X_test_pt, y_test)
                 if (curr_auc > best_auc):
                     best_auc = curr_auc
                     best_auc_ind = ind

@@ -16,14 +16,15 @@ from param_initializations import set_seed
 
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
-
+from EarlyStopping import EarlyStopping
 
 from tqdm import tqdm
 from time import sleep
 
 from itertools import combinations
 
-
+import optuna
+from optuna.trial import TrialState
 from rtpt import RTPT
 import random
 import time
@@ -399,14 +400,14 @@ class LogisticRegressionWithSummaries(nn.Module):
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
-        batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
+        # batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
         weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.time_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
-        weight_norm = torch.sum(weight_vector * batch_measurement_repeat, dim=1)
-        weight_mask = torch.sum(batch_measurement_indicators, dim=1)
+        # weight_norm = torch.sum(weight_vector * batch_measurement_repeat, dim=1)
+        # weight_mask = torch.sum(batch_measurement_indicators, dim=1)
         
         # MEAN FEATURES
 
@@ -711,14 +712,14 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
-        batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
+        # batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
         weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.time_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
-        weight_norm = torch.sum(weight_vector * batch_measurement_repeat, dim=1)
-        weight_mask = torch.sum(batch_measurement_indicators, dim=1)
+        # weight_norm = torch.sum(weight_vector * batch_measurement_repeat, dim=1)
+        # weight_mask = torch.sum(batch_measurement_indicators, dim=1)
         
         # MEAN FEATURES
 
@@ -1180,7 +1181,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             self.model.bottleneck.weight = torch.nn.Parameter(self.model.bottleneck.weight.where(condition, torch.tensor(0.0).cuda()))
         sleep(0.5)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, epochs=10000, save_every_n_epochs=100):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, epochs=10000, save_every_n_epochs=100, patience=3, trial=None):
         """
         
         Args:
@@ -1194,6 +1195,8 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=epochs)
         rtpt.start()
         
+        self.earlyStopping = EarlyStopping(patience=patience, min_delta=0, mode=EarlyStopping.Mode.MIN)
+        
         self.loss_func = custom_bce_horseshoe
         self.train_losses = []
         self.val_losses = []
@@ -1201,16 +1204,10 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         
         self._load_model(save_model_path)
         
-        epoch_loss = 0
-        
-        for epoch in tqdm(range(self.curr_epoch+1, epochs)):           
+        for epoch in tqdm(range(self.curr_epoch+1, epochs)):
             epoch_loss = 0
-            num_batches = 0
-            for batch, data in enumerate(train_loader):
-
-                Xb, yb = data
-                num_batches +=1
-
+            
+            for batch_idx, (Xb, yb) in enumerate(train_loader):
                 self.model.zero_grad()
                 output = self.model(Xb)
 
@@ -1230,7 +1227,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
 
                 loss.backward()
 
-                epoch_loss += loss.item()
+                epoch_loss += loss.item() / len(train_loader)
                 
                 # don't let weight update if zero weight
                 if (self.zero_weight):
@@ -1244,35 +1241,48 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                 # update all parameters
                 self.optimizer.step()
             
+            
             if (epoch % save_every_n_epochs) == (-1 % save_every_n_epochs):
-                        
-                epoch_loss = epoch_loss / num_batches
-                
-                self.train_losses.append(epoch_loss)
-                
-                # Calculate validation set loss
-                val_loss = 0
-                num_batches_val = 0
-                for batch, data in enumerate(val_loader):
-                    Xb, yb = data
-                    num_batches_val += 1
-           
-                    # Forward pass.
-                    self.model.zero_grad()
-                    output = self.model(Xb)
+                with torch.no_grad():
+                    
+                    self.train_losses.append(epoch_loss)
+                    
+                    # Calculate validation set loss
+                    val_loss = 0
+                    for batch_idx, (Xb, yb) in enumerate(val_loader):
+            
+                        # Forward pass.
+                        self.model.zero_grad()
+                        output = self.model(Xb)
 
-                    val_loss += binary_cross_entropy_with_logits(output, yb, pos_weight = p_weight) 
-                
-                self.val_losses.append(val_loss.item()/num_batches_val)
-                
-                torch.save({
-                            'epoch': epoch,
-                            'model_state_dict': self.model.state_dict(),
-                            'optimizer_state_dict': self.optimizer.state_dict(),
-                            'train_losses': self.train_losses,
-                            'val_losses': self.val_losses,
-                            }, save_model_path)
+                        val_loss += binary_cross_entropy_with_logits(output, yb, pos_weight = p_weight) 
+                    
+                    val_loss = val_loss.item() / len(val_loader)
+                    self.val_losses.append(val_loss)
+                    
+                    state = {
+                        'epoch': epoch,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict(),
+                        'train_losses': self.train_losses,
+                        'val_losses': self.val_losses,
+                        }
+                    
+                    if self.earlyStopping.check_improvement(val_loss, state):
+                        break
+                    
+                    if save_model_path:
+                        torch.save(state, save_model_path)
+                    
+                    if trial:
+                        trial.report(val_loss, epoch)
+                        
+                        if trial.should_prune():
+                            raise optuna.exceptions.TrialPruned()
             
+            rtpt.step(subtitle=f"loss={epoch_loss:2.2f}")
             
-            rtpt.step(subtitle=f"loss={loss:2.2f}")
-                
+        if save_model_path:
+            torch.save(self.earlyStopping.best_state, save_model_path)
+        
+        return epoch_loss, val_loss

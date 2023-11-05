@@ -31,6 +31,8 @@ RUN pip install tables
 RUN pip install rtpt
 RUN pip install tqdm
 RUN pip install seaborn squarify imblearn
+RUN pip install optuna, plotly, kaleido
+RUN pip install "notebook>=5.3" "ipywidgets>=7.5"
 
 # RUN echo "conda activate optimal-summaries" >> ~/.bashrc
 # RUN conda config --set auto_activate_base false

@@ -50,13 +50,13 @@ parser.add_argument('--thresholds_temperature', type=float, default=0.1)
 parser.add_argument('--ever_measured_temperature', type=float, default=0.1)
 parser.add_argument('--switch_temperature', type=float, default=0.1)
 
-parser.add_argument('--opt_lr', type=float, default=1e-4)
-parser.add_argument('--opt_weight_decay', type=float, default=0.)
-parser.add_argument('--l1_lambda', type=float, default=0.)
-parser.add_argument('--cos_sim_lambda', type=float, default=0.)
+parser.add_argument('--opt_lr', type=float, default=1e-3)
+parser.add_argument('--opt_weight_decay', type=float, default=1e-5)
+parser.add_argument('--l1_lambda', type=float, default=1e-3)
+parser.add_argument('--cos_sim_lambda', type=float, default=1e-2)
 
 parser.add_argument('--output_dir', type=str, default='')
-parser.add_argument('--model_output_name', type=str, default='bottleneck')
+parser.add_argument('--model_output_name', type=str, default='')
 parser.add_argument('--num_epochs', type=int, default=1000)
 parser.add_argument('--save_every', type=int, default=100)
 
