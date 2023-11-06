@@ -1,15 +1,13 @@
-FROM pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime
+FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
+RUN apt-get clean && \
+    apt-get update && \
     apt-get -y upgrade && \
+    apt-get install -y apt-transport-https && \
     apt-get install -y git && \
     apt-get install -y curl && \
-    apt-get install -y wget 
-    # && \
-    # apt-get install -y software-properties-common && \
-    # add-apt-repository ppa:deadsnakes/ppa && \
-    # apt-get install -y python3.8
+    apt-get install -y wget
 
 
 WORKDIR /workdir
@@ -20,22 +18,12 @@ RUN git config --global user.email "KevinArmbruster2013@gmail.com"
 
 
 RUN pip install --upgrade pip
-RUN pip install ipython notebook
-RUN pip install numpy
-RUN pip install pandas
-RUN pip install matplotlib
-RUN pip install scipy
-RUN pip install scikit-learn
-RUN pip install h5py
-RUN pip install tables
-RUN pip install rtpt
-RUN pip install tqdm
+RUN pip install ipython "notebook>=5.3" "ipywidgets>=7.5"
+RUN pip install numpy pandas matplotlib scipy scikit-learn
+RUN pip install h5py tables
+RUN pip install rtpt tqdm
 RUN pip install seaborn squarify imblearn
-RUN pip install optuna, plotly, kaleido
-RUN pip install "notebook>=5.3" "ipywidgets>=7.5"
-
-# RUN echo "conda activate optimal-summaries" >> ~/.bashrc
-# RUN conda config --set auto_activate_base false
+RUN pip install optuna plotly kaleido
 
 
 #EXPOSE 8090
@@ -43,4 +31,4 @@ ENTRYPOINT ["top", "-b"]
 
 # SETUP INSTRUCTIONS
 # docker build -t optimal-summaries-env .
-# docker run --name optimal-summaries-env3 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data -d optimal-summaries-env
+# docker run --name optimal-summaries-env4 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data -d optimal-summaries-env
