@@ -167,7 +167,7 @@ y_hat_test = []
 for pat in X_test:
     # batch size of 1
     x = tensor_wrap([pat]).cuda()
-    y_hat_test.append(logreg.model.sigmoid(logreg.model.forward(x))[:,1].item())
+    y_hat_test.append(logreg.model.output_af(logreg.model.forward(x))[:,1].item())
 score = roc_auc_score(np.array(y_test)[:, 1], y_hat_test)
 
 # write results to csv

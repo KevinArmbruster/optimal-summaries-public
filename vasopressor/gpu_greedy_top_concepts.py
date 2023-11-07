@@ -38,7 +38,7 @@ def tensor_wrap(x, klass=torch.Tensor):
 
 def getAUC(model, X_test, y_test):
     # get results of forward, do AUROC
-    y_hat_test = model.sigmoid(model.forward(X_test))[:,1].cpu().detach()
+    y_hat_test = model.output_af(model.forward(X_test))[:,1].cpu().detach()
     score = roc_auc_score(y_test[:, 1], y_hat_test)
     return score
 

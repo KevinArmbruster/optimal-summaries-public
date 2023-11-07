@@ -199,7 +199,7 @@ class LSTM_Baseline(nn.Module):
             self.model.zero_grad()
             X_t1_pred, y_pred, _, _ = self.model(Xb)
 
-            y_hats = self.model.sigmoid(y_pred)[:,1].detach().cpu().numpy()
+            y_hats = self.model.output_af(y_pred)[:,1].detach().cpu().numpy()
 
             if np.isnan(y_hats).any() == False:
                 auc = roc_auc_score(yb.detach().cpu().numpy()[:, 1], y_hats)

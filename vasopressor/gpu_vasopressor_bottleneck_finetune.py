@@ -174,7 +174,7 @@ logregbottleneck.fit(train_loader, val_loader, p_weight,
 torch.set_printoptions(precision=10)
 
 # get AUC
-y_hat_test = logregbottleneck.model.sigmoid(logregbottleneck.model.forward(X_test_pt))[:,1].cpu().detach()
+y_hat_test = logregbottleneck.model.output_af(logregbottleneck.model.forward(X_test_pt))[:,1].cpu().detach()
 score = roc_auc_score(y_test[:, 1], y_hat_test)
 
 # write results to csv
