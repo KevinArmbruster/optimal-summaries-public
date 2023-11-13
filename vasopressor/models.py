@@ -1180,6 +1180,9 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
     
     def predict(self, X):
         return self.model.predict(X)
+    
+    def argmax_to_preds(self, y_probs):
+        return torch.argmax(y_probs, dim=1)
         
     def _load_model(self, path, print_=True):
         """

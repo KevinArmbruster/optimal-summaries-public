@@ -5,3 +5,4 @@
 *.pt
 *.pyc
 *.txt
+/data/
