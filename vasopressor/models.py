@@ -10,9 +10,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy
+from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 from custom_losses import LSTM_compound_loss, custom_bce_horseshoe
 from param_initializations import set_seed
+from torchmetrics import AUROC, Accuracy, MeanSquaredError
 
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
@@ -28,6 +29,11 @@ from optuna.trial import TrialState
 from rtpt import RTPT
 import random
 import time
+from enum import Enum
+
+class Mode(Enum):
+    CLASSIFICATION = 0
+    REGRESSION = 1
 
 
 def add_all_parsers(p, input_dim, changing_dim, str_type = 'linear'):
@@ -609,7 +615,8 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                  zero_weight = False,
                  top_k = '',
                  top_k_num = 0,
-                 n_classes = 2,
+                 output_dim = 2,
+                 mode = Mode.CLASSIFICATION,
                  ):
         """Initializes the LogisticRegressionWithSummariesAndBottleneck.
         
@@ -637,7 +644,8 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         self.zero_weight = zero_weight
         self.top_k = top_k
         self.top_k_num = top_k_num
-        self.n_classes = n_classes
+        self.output_dim = output_dim
+        self.mode = mode
         
         if (self.zero_weight):
             self.num_concepts = self.num_concepts+1
@@ -651,16 +659,18 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.n_classes == 2:
+        if mode == Mode.CLASSIFICATION and output_dim == 2:
             self.output_af = nn.Sigmoid()
-        else:
+        elif mode == Mode.CLASSIFICATION and output_dim > 2:
             self.output_af = nn.Softmax(dim=1)
+        elif mode == Mode.REGRESSION:
+            self.output_af = nn.Identity()
         
         num_total_c_weights = changing_dim * num_cutoff_times
         
         # Initialize cutoff_times to by default use all of the timesteps.
         self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights).cuda()
-                  
+        
         if differentiate_cutoffs: 
             cutoff_vals = init_cutoffs(num_total_c_weights)
             
@@ -693,7 +703,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         self.sigmoid_bottleneck = nn.Sigmoid()
         
         # prediction task
-        self.linear = nn.Linear(self.num_concepts, self.n_classes)
+        self.linear = nn.Linear(self.num_concepts, self.output_dim)
         
         if (self.zero_weight):
             with torch.no_grad():
@@ -1100,8 +1110,6 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                  init_lower_thresholds, 
                  init_upper_thresholds, 
                  cutoff_times_temperature = 1.0,
-                 alpha = 1e-4,
-                 tau = 10.,
                  opt_lr = 1e-4,
                  opt_weight_decay = 0.,
                  cutoff_times_init_values = None,
@@ -1111,7 +1119,8 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                  top_k = '',
                  top_k_num = 0,
                  time_len = 6,
-                 n_classes = 2
+                 output_dim = 2,
+                 mode = Mode.CLASSIFICATION,
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
         
@@ -1124,8 +1133,6 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             init_upper_thresholds (function): function to initialize upper threshold parameters
             time_len (int): number of time-steps in each trajectory
             -- 
-            alpha (float): multiplicative coefficient of the horseshoe loss term
-            tau (float): constant used to calculate horseshoe loss term
             opt_lr (float): learning rate for the optimizer
             opt_weight_decay (float): weight decay for the optimizer
             num_concepts (int): number of concepts in bottleneck layer
@@ -1146,7 +1153,8 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         self.zero_weight = zero_weight
         self.top_k = top_k
         self.top_k_num = top_k_num
-        self.n_classes = n_classes
+        self.output_dim = output_dim
+        self.mode = mode
         
         self.model = LogisticRegressionWithSummariesAndBottleneck(input_dim, 
                                                 changing_dim, 
@@ -1158,18 +1166,20 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                                                 init_upper_thresholds,
                                                 cutoff_times_temperature,
                                                 cutoff_times_init_values,
-                                                zero_weight=zero_weight,
+                                                zero_weight = zero_weight,
                                                 top_k = top_k,
                                                 top_k_num = top_k_num,
-                                                time_len=time_len,
-                                                n_classes=n_classes)
+                                                time_len = time_len,
+                                                output_dim = output_dim,
+                                                mode = mode,
+                                                )
         
         self.opt_lr = opt_lr
         self.opt_weight_decay = opt_weight_decay
         
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr= opt_lr, weight_decay = opt_weight_decay)
-        
-        self.l1_lambda=l1_lambda
+
+        self.l1_lambda = l1_lambda
         self.cos_sim_lambda = cos_sim_lambda
     
     def forward(self, X):
@@ -1312,20 +1322,24 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         return self.train_losses[-1], self.val_losses[-1]
 
     def compute_loss(self, yb, y_pred, p_weight):
-        if self.n_classes == 2:
+        if self.mode == Mode.CLASSIFICATION and self.output_dim == 2:
             loss = binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight)
-        else:
+        elif self.mode == Mode.CLASSIFICATION and self.output_dim > 2:
             loss = cross_entropy(y_pred, yb, weight = p_weight)
+        elif self.mode == Mode.REGRESSION:
+            loss = mse_loss(y_pred, yb)
         
-        L1_reg = torch.norm(self.model.bottleneck.weight, 1)
-        loss = loss + self.l1_lambda * L1_reg 
+        # Lasso regularization
+        L1_norm = torch.norm(self.model.bottleneck.weight, 1)
+        loss = loss + self.l1_lambda * L1_norm 
         
+        # Cosine_similarity regularization
         if self.num_concepts != 1:
             concepts = torch.arange(self.num_concepts).cuda()
             indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
 
             weights = self.model.bottleneck.weight[indices]  # Extract corresponding weight vectors
-            cos_sim = torch.abs(F.cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum().cuda()
+            cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum().cuda()
             
             loss = loss + self.cos_sim_lambda * cos_sim
         
