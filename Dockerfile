@@ -32,4 +32,4 @@ ENTRYPOINT ["tail", "-f", "/dev/null"]
 
 # SETUP INSTRUCTIONS
 # docker build -t optimal-summaries-env .
-# docker run --name optimal-summaries-env -v /home/karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
+# docker run -v /home/karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
