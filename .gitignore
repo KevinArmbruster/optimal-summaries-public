@@ -2,7 +2,6 @@
 *.p
 *.npy
 *.csv
-*.pt
 *.pyc
 *.txt
 /data/
