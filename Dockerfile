@@ -28,8 +28,8 @@ RUN pip install aeon torchmetrics
 
 
 #EXPOSE 8090
-ENTRYPOINT ["top", "-b"]
+ENTRYPOINT ["tail", "-f", "/dev/null"]
 
 # SETUP INSTRUCTIONS
 # docker build -t optimal-summaries-env .
-# docker run --name optimal-summaries-env4 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data/mimic-iii -d optimal-summaries-env
+# docker run --name optimal-summaries-env -v /home/karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
