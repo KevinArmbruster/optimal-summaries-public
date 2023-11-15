@@ -32,4 +32,4 @@ ENTRYPOINT ["top", "-b"]
 
 # SETUP INSTRUCTIONS
 # docker build -t optimal-summaries-env .
-# docker run --name optimal-summaries-env4 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data -d optimal-summaries-env
+# docker run --name optimal-summaries-env4 -v /home/karmbruster/mimic-iii/physionet.org/export:/workdir/data/mimic-iii -d optimal-summaries-env
