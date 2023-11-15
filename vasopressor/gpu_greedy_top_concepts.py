@@ -1,50 +1,30 @@
 import os
-import sys
 import argparse
-import time
 import csv
-
 import numpy as np
 import pandas as pd
-import pickle
 import torch
-import random
-from tqdm import tqdm
-
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-
-import matplotlib.pyplot as plt
-
-from weights_parser import WeightsParser
-
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
-
-from custom_losses import custom_bce_horseshoe
-from param_initializations import *
-
-from preprocess_helpers import myPreprocessed
-
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.nn.functional import binary_cross_entropy_with_logits
 from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
+from torchmetrics import AUROC
+
+from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from param_initializations import *
+from preprocess_helpers import myPreprocessed
+from optimization_strategy import greedy_selection
 
 def tensor_wrap(x, klass=torch.Tensor):
     return x if 'torch' in str(type(x)) else klass(x)
 
-def getAUC(model, X_test, y_test):
-    # get results of forward, do AUROC
-    y_hat_test = model.output_af(model.forward(X_test))[:,1].cpu().detach()
-    score = roc_auc_score(y_test[:, 1], y_hat_test)
-    return score
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--split_random_state', type=int, default=1)
+parser.add_argument('--dir', type=str, default='')
+parser.add_argument('--n_concepts', type=int, default=4)
 FLAGS = parser.parse_args()
+
 
 # device = torch.device("cuda:0")  # Uncomment this to run on GPU
 torch.cuda.get_device_name(0)
@@ -90,17 +70,26 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_
 input_dim = X_np[0].shape[1]
 changing_dim = len(changing_vars)
 
-num_concepts = 4
+
+experiment_folder = FLAGS.dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
+experiment_top_k_folder = os.path.join(experiment_folder, "top-k/")
+if not os.path.exists(experiment_top_k_folder):
+    os.makedirs(experiment_top_k_folder)
+
+
+n_concepts = FLAGS.n_concepts
+
 # get top features for a set number of concepts
 topkinds = []
-with open('./models/LOS-6-600/cos-sim/top-k/topkindsr{}c{}.csv'.format(FLAGS.split_random_state, num_concepts), mode ='r')as file:
+with open(experiment_top_k_folder + 'topkindsr{}c{}.csv'.format(FLAGS.split_random_state, n_concepts), mode ='r')as file:
     # reading the CSV file
     csvFile = csv.reader(file)
     for row in csvFile:
         topkinds.append(np.array(list(map(int, row))))
 
+
 # run experiment
-file = open('./models/LOS-6-600/cos-sim/vasopressor_bottleneck_r{}_c{}_gridsearch.csv'.format(FLAGS.split_random_state, num_concepts))
+file = open(experiment_folder + 'bottleneck_r{}_c{}_gridsearch.csv'.format(FLAGS.split_random_state, n_concepts))
 csvreader = csv.reader(file)
 header = next(csvreader)
 bottleneck_row = []
@@ -111,11 +100,12 @@ for row in csvreader:
 row=[int(el) if el >= 1 else el for el in bottleneck_row]
 row=[0 if el == 0 else el for el in bottleneck_row]
 
+
 set_seed(FLAGS.split_random_state)
 logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
                                                                             changing_dim,
                                                                             9,                     
-                                                                            num_concepts,
+                                                                            n_concepts,
                                                                             True,
                                                                             init_cutoffs_to_zero, 
                                                                             init_rand_lower_thresholds, 
@@ -128,47 +118,18 @@ logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_di
                                                                             cos_sim_lambda = row[4]
                                                                             )
 logregbottleneck.cuda()
-set_seed(FLAGS.split_random_state)
+
 logregbottleneck.fit(train_loader, val_loader, p_weight, 
-                     save_model_path = "./models/LOS-6-600/cos-sim/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1lambda_{}_cossimlambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
+                     save_model_path = experiment_folder + "/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1lambda_{}_cossimlambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
                      epochs=10, 
                      save_every_n_epochs=10)
 
-# perform greedy selection
-condition = torch.zeros(logregbottleneck.model.bottleneck.weight.shape, dtype=torch.bool).cuda()
-best_aucs = []
-best_auc_inds = []
-best_auc_concepts = []
-for i in tqdm(range(10*num_concepts)):
-    best_auc = 0
-    best_auc_ind = -1
-    best_auc_concept = -1
-    temp = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.clone().detach())
-    
-    for c in range(num_concepts):
-        for ind in topkinds[c]:
-            # add 1 feature to test AUC
-            if not condition[c][ind]:
-                condition[c][ind]=True
-                logregbottleneck.model.bottleneck.weight = torch.nn.Parameter(logregbottleneck.model.bottleneck.weight.where(condition, torch.tensor(0.0).cuda()))
 
-                # get AUC with added feature
-                curr_auc = getAUC(logregbottleneck.model, X_test_pt, y_test)
-                if (curr_auc > best_auc):
-                    best_auc = curr_auc
-                    best_auc_ind = ind
-                    best_auc_concept = c
+auroc_metric = AUROC(task="binary").cuda()
+best_aucs, best_auc_inds, best_auc_concepts = greedy_selection(auroc_metric, X_test_pt, y_test, n_concepts, topkinds, logregbottleneck)
 
-                # remove feature
-                condition[c][ind]=False
-                logregbottleneck.model.bottleneck.weight = temp
 
-    condition[best_auc_concept][best_auc_ind] = True
-    best_aucs.append(best_auc)
-    best_auc_inds.append(best_auc_ind)
-    best_auc_concepts.append(best_auc_concept)
-
-filename = "./models/LOS-6-600/cos-sim/top-k/vasopressor_bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state,num_concepts)
+filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state, n_concepts)
 
 # writing to csv file
 with open(filename, 'w') as csvfile: 

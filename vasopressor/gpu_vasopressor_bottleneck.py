@@ -1,5 +1,4 @@
 import os
-import sys
 import argparse
 import time
 import csv
@@ -8,29 +7,13 @@ import numpy as np
 import pandas as pd
 import pickle
 import torch
-import random
-
+from torchmetrics import AUROC
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
-
-import matplotlib.pyplot as plt
-
-from weights_parser import WeightsParser
 
 from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
-
-from custom_losses import custom_bce_horseshoe
 from param_initializations import *
-
 from preprocess_helpers import myPreprocessed
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.nn.functional import binary_cross_entropy_with_logits
-
-# X_np, Y_logits, changing_vars, data_cols = preprocess_MIMIC_data('data/X_vasopressor_LOS_6_600.p', 'data/y_vasopressor_LOS_6_600.p')
 X_np, Y_logits, changing_vars, _ = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
 
 parser = argparse.ArgumentParser()
@@ -63,9 +46,10 @@ parser.add_argument('--save_every', type=int, default=100)
 
 FLAGS = parser.parse_args()
 
-# Set up path to save model artifacts, possibly suffixed with an experiment ID
-path = FLAGS.output_dir or f"/tmp/{int(time.time())}"
-os.system('mkdir -p ' + path)
+directory = FLAGS.output_dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
+if not os.path.exists(directory):
+    os.makedirs(directory)
+
 
 # device = torch.device("cuda:0")  # Uncomment this to run on GPU
 torch.cuda.get_device_name(0)
@@ -138,8 +122,9 @@ if len(FLAGS.cutoff_times_init_values_filepath) > 0:
     # Load the numpy array from its filepath.
     cutoff_times_init_values = pickle.load( open( FLAGS.cutoff_times_init_values_filepath, "rb" ) )
 
+
 set_seed(FLAGS.split_random_state)
-    
+
 # initialize model
 logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
                                                  changing_dim, 
@@ -160,32 +145,26 @@ logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_di
                                                 )
 logregbottleneck.cuda()
 
-set_seed(FLAGS.split_random_state)
 
 # train model
 logregbottleneck.fit(train_loader, val_loader, p_weight,
-         save_model_path = FLAGS.model_output_name,
+         save_model_path = directory + FLAGS.model_output_name,
          epochs=FLAGS.num_epochs,
          save_every_n_epochs=FLAGS.save_every)
 
 torch.set_printoptions(precision=10)
 
-# get AUC
-y_hat_test = []
-for pat in X_test:
-    # batch size of 1
-    x = tensor_wrap([pat]).cuda()
-    y_pred = logregbottleneck.model.output_af(logregbottleneck.model.forward(x))[:,1].item()
-    y_hat_test.append(y_pred)
-score = roc_auc_score(np.array(y_test)[:, 1], y_hat_test)
 
+# get AUC
+auroc_metric = AUROC(task="binary").cuda()
+y_pred = logregbottleneck.forward_probabilities(X_test_pt)
+score = auroc_metric(y_pred, y_test_pt).item()
 
 
 # write results to csv
-filename = "vasopressor_bottleneck_r{}_c{}_gridsearch".format(FLAGS.split_random_state,FLAGS.num_concepts)
-dir_path = "/workdir/optimal-summaries-public/vasopressor/models/LOS-6-600/cos-sim"
-with open('{file_path}.csv'.format(file_path=os.path.join(dir_path, filename)), 'a+') as csvfile: 
+filename = "bottleneck_r{}_c{}_gridsearch".format(FLAGS.split_random_state,FLAGS.num_concepts)
+with open('{file_path}.csv'.format(file_path=os.path.join(directory, filename)), 'a+') as csvfile: 
     # creating a csv writer object 
     csvwriter = csv.writer(csvfile) 
     # csvwriter.writerow([FLAGS.num_concepts, FLAGS.opt_lr, FLAGS.opt_weight_decay, score]) 
-    csvwriter.writerow([FLAGS.num_concepts, FLAGS.opt_lr, FLAGS.opt_weight_decay, FLAGS.l1_lambda,FLAGS.cos_sim_lambda, score]) 
+    csvwriter.writerow([FLAGS.num_concepts, FLAGS.opt_lr, FLAGS.opt_weight_decay, FLAGS.l1_lambda, FLAGS.cos_sim_lambda, score]) 

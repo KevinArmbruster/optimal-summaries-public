@@ -1319,7 +1319,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)
         
-        return self.train_losses[-1], self.val_losses[-1]
+        return
 
     def compute_loss(self, yb, y_pred, p_weight):
         if self.mode == Mode.CLASSIFICATION and self.output_dim == 2:
