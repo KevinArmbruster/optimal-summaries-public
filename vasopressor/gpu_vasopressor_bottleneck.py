@@ -14,7 +14,7 @@ from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 from param_initializations import *
 from preprocess_helpers import myPreprocessed
 
-X_np, Y_logits, changing_vars, _ = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
+X_np, Y_logits, changing_vars, _ = myPreprocessed()
 
 parser = argparse.ArgumentParser()
 

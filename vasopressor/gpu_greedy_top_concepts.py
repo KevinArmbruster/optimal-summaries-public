@@ -32,7 +32,7 @@ torch.cuda.is_available()
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 # prep data
-X_np, Y_logits, changing_vars, _ = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
+X_np, Y_logits, changing_vars, _ = myPreprocessed()
 
 # train-test-split
 torch.set_printoptions(sci_mode=False)
@@ -126,7 +126,7 @@ logregbottleneck.fit(train_loader, val_loader, p_weight,
 
 
 auroc_metric = AUROC(task="binary").cuda()
-best_aucs, best_auc_inds, best_auc_concepts = greedy_selection(auroc_metric, X_test_pt, y_test, n_concepts, topkinds, logregbottleneck)
+results = greedy_selection(auroc_metric, test_loader, topkinds, logregbottleneck)
 
 
 filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state, n_concepts)
@@ -135,7 +135,7 @@ filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FL
 with open(filename, 'w') as csvfile: 
     # creating a csv writer object 
     csvwriter = csv.writer(csvfile)
-    csvwriter.writerow(["Best AUC", "Best AUC Concept #", "Best AUC ind #"])
+    csvwriter.writerow(results.columns)
     # writing the data rows 
-    for row in zip(best_aucs, best_auc_concepts, best_auc_inds):
+    for row in results.itertuples(index=False):
         csvwriter.writerow(list(row))

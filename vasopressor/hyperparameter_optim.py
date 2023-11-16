@@ -16,7 +16,7 @@ from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 
 
 # %%
-X_np, Y_logits, changing_vars, data_cols = myPreprocessed("../vasopressor-Xdata.npy", "../vasopressor-Ylogits.npy")
+X_np, Y_logits, changing_vars, data_cols = myPreprocessed()
 input_dim = X_np.shape[2]
 changing_dim = len(changing_vars)
 

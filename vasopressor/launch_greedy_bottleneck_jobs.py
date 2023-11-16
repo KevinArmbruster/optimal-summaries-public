@@ -25,7 +25,7 @@ def launch_job(exp, time_limit=None, mem_limit=None):
     os.system(job_command)
 
 
-for r in range(1,3):
+for r in range(1,2):
     d = {}
     d['split_random_state'] = r
     launch_job(d)

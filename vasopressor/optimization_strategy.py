@@ -1,12 +1,15 @@
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from typing import List
 from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 from tqdm import tqdm
 from torchmetrics import Metric
+from collections import defaultdict
 
-def greedy_selection(score_func: Metric, test_loader: DataLoader, top_k_inds: List[List[int]], wrapper: LogisticRegressionWithSummariesAndBottleneck_Wrapper, device = 'cuda'):
+def greedy_selection(optimize_metric: Metric, test_loader: DataLoader, top_k_inds: List[List[int]], wrapper: LogisticRegressionWithSummariesAndBottleneck_Wrapper, device = 'cuda', track_metrics: dict[str, Metric] = None):
+    optimize_metric.reset()
     num_concepts = wrapper.get_num_concepts()
     feature_budget = 10 * num_concepts
     
@@ -14,7 +17,9 @@ def greedy_selection(score_func: Metric, test_loader: DataLoader, top_k_inds: Li
     best_scores = []
     best_score_inds = []
     best_score_concepts = []
+    tracked_metrics = defaultdict(list)
     
+    wrapper.eval()
     with torch.no_grad():
         for i in tqdm(range(feature_budget)):
             best_score = 0
@@ -31,12 +36,12 @@ def greedy_selection(score_func: Metric, test_loader: DataLoader, top_k_inds: Li
                         wrapper.model.bottleneck.weight = torch.nn.Parameter(wrapper.model.bottleneck.weight.where(condition, torch.tensor(0.0).to(device)))
 
                         # get score with added feature
-                        curr_score = 0.
                         for i, (X_test, y_test) in enumerate(test_loader):
                             X_test, y_test = X_test.to(device), y_test.to(device)
                             y_pred = wrapper.forward_probabilities(X_test)
-                            curr_score += score_func(y_pred, y_test).item()
-                        curr_score /= len(test_loader)
+                            curr_score = optimize_metric(y_pred, y_test)
+                        curr_score = optimize_metric.compute().item()
+                        optimize_metric.reset()
                         
                         if (curr_score > best_score):
                             best_score = curr_score
@@ -52,5 +57,23 @@ def greedy_selection(score_func: Metric, test_loader: DataLoader, top_k_inds: Li
             best_scores.append(best_score)
             best_score_inds.append(best_score_ind)
             best_score_concepts.append(best_score_concept)
-        
-    return best_scores, best_score_inds, best_score_concepts
+            
+            # track additional metrics
+            if track_metrics:
+                for name, metric in track_metrics.items():
+                    for i, (X_test, y_test) in enumerate(test_loader):
+                        X_test, y_test = X_test.to(device), y_test.to(device)
+                        y_pred = wrapper.forward_probabilities(X_test)
+                        curr_score = metric(y_pred, y_test)
+                    curr_score = metric.compute().item()
+                    tracked_metrics[name].append(curr_score)
+                    metric.reset()
+
+    
+    data = {
+        "Score": best_scores,
+        "ID": best_score_inds,
+        "Concept": best_score_concepts,
+        **tracked_metrics
+    }
+    return pd.DataFrame(data)

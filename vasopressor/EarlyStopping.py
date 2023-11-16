@@ -7,7 +7,7 @@ class EarlyStopping:
         MIN = 0
         MAX = 1
     
-    def __init__(self, patience=3, min_delta=0, mode=Mode.MIN):
+    def __init__(self, patience=5, min_delta=0, mode=Mode.MIN):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0

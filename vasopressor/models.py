@@ -727,10 +727,10 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                     i+=1
                 else:
                     break
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool).to(self.device)
+            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool)#.to(self.device)
             for i in range(len(top_k_inds)):
                 condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0).to(self.device)))
+            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0)))#.to(self.device)))
     
     def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
@@ -1243,7 +1243,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             self.model.bottleneck.weight = torch.nn.Parameter(self.model.bottleneck.weight.where(condition, torch.tensor(0.0).to(self.device)))
         sleep(0.5)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, epochs=10000, save_every_n_epochs=100, patience=3, trial=None):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, epochs=10000, save_every_n_epochs=100, patience=5, trial=None):
         """
         
         Args:
@@ -1265,6 +1265,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         self._load_model(save_model_path)
         
         for epoch in tqdm(range(self.curr_epoch+1, epochs)):
+            self.train()
             epoch_loss = 0
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
@@ -1292,6 +1293,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             
             
             if (epoch % save_every_n_epochs) == (-1 % save_every_n_epochs):
+                self.eval()
                 with torch.no_grad():
                     
                     self.train_losses.append(epoch_loss)

@@ -27,8 +27,8 @@ def launch_job(exp, time_limit=None, mem_limit=None):
 
 
 # Run experiments with randomly sampled hyperparameters.
-arr_opt_lr = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
-arr_opt_weight_decay = [0, 1e-5, 1e-4, 1e-3]
+arr_opt_lr = [1e-4]
+arr_opt_weight_decay = [1e-5]
 arr_l1_lambda = [1e-3]
 arr_cos_sim_lambda = [1e-2]
 
@@ -37,7 +37,7 @@ save_every = 10
 N_experiments = 1
 
 
-for r in range(1,3):
+for r in range(1,2):
     for c in range(4,5):
         filename = "bottleneck_r{}_c{}_gridsearch".format(r, c)
         # Write hyperparameters to csv file
