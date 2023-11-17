@@ -9,12 +9,12 @@ import pickle
 import torch
 from torchmetrics import AUROC
 from sklearn.model_selection import train_test_split
+from torch.utils.data import TensorDataset, DataLoader
 
 from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 from param_initializations import *
 from preprocess_helpers import myPreprocessed
 
-X_np, Y_logits, changing_vars, _ = myPreprocessed()
 
 parser = argparse.ArgumentParser()
 
@@ -51,11 +51,11 @@ if not os.path.exists(directory):
     os.makedirs(directory)
 
 
-# device = torch.device("cuda:0")  # Uncomment this to run on GPU
-torch.cuda.get_device_name(0)
-torch.cuda.is_available()
+device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+print(f"Using device={device}")
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
+X_np, Y_logits, changing_vars, _ = myPreprocessed()
 # train-test-split
 torch.set_printoptions(sci_mode=False)
 X_train, X_test, y_train, y_test = train_test_split(X_np, Y_logits, test_size = 0.15, random_state = FLAGS.split_random_state, stratify = Y_logits)
@@ -63,39 +63,34 @@ X_train, X_test, y_train, y_test = train_test_split(X_np, Y_logits, test_size = 
 # train-val split
 X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size = 0.20, random_state = FLAGS.split_random_state, stratify = y_train)
 
-from torch.utils.data import TensorDataset, DataLoader
-from torch.autograd import Variable
-
-def tensor_wrap(x, klass=torch.Tensor):
-    return x if 'torch' in str(type(x)) else klass(x)
-
-X_pt = Variable(tensor_wrap(X_np)).cuda()
+def tensor(data):
+    return torch.tensor(data, requires_grad=False, dtype=torch.float32, device=device)
 
 pos_prop = np.mean(np.array(Y_logits)[:, 1])
+p_weight = tensor([1 / (1 - pos_prop), 1 / pos_prop])
 
-p_weight = torch.Tensor([1 / (1 - pos_prop), 1 / pos_prop]).cuda()
+X_train_pt = tensor(X_train)
+y_train_pt = tensor(y_train)
 
-X_train_pt = Variable(tensor_wrap(X_train)).cuda()
-y_train_pt = Variable(tensor_wrap(y_train, torch.FloatTensor)).cuda()
+X_val_pt = tensor(X_val)
+y_val_pt = tensor(y_val)
 
-X_val_pt = Variable(tensor_wrap(X_val)).cuda()
-y_val_pt = Variable(tensor_wrap(y_val, torch.FloatTensor)).cuda()
-
-X_test_pt = Variable(tensor_wrap(X_test)).cuda()
-y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
+X_test_pt = tensor(X_test)
+y_test_pt = tensor(y_test)
 
 batch_size = FLAGS.batch_size
 
 train_dataset = TensorDataset(X_train_pt, y_train_pt)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
+train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, generator = torch.Generator(device=device))
 
 val_dataset = TensorDataset(X_val_pt, y_val_pt)
-val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
+val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=False, generator = torch.Generator(device=device))
 
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
+test_loader = DataLoader(test_dataset, batch_size = X_test_pt.shape[0], shuffle=False, generator = torch.Generator(device=device))
 
-input_dim = X_np[0].shape[1]
+ts_length = X_np.shape[1]
+input_dim = X_np.shape[2] * ts_length
 changing_dim = len(changing_vars)
 
 cutoff_init_fn = init_cutoffs_to_zero
@@ -143,7 +138,7 @@ logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_di
                                                  top_k = FLAGS.top_k,
                                                  top_k_num = FLAGS.top_k_num
                                                 )
-logregbottleneck.cuda()
+logregbottleneck.to(device)
 
 
 # train model
@@ -156,7 +151,7 @@ torch.set_printoptions(precision=10)
 
 
 # get AUC
-auroc_metric = AUROC(task="binary").cuda()
+auroc_metric = AUROC(task="binary").to(device)
 y_pred = logregbottleneck.forward_probabilities(X_test_pt)
 score = auroc_metric(y_pred, y_test_pt).item()
 

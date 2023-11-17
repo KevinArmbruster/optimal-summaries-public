@@ -31,7 +31,7 @@ import random
 import time
 from enum import Enum
 
-class Mode(Enum):
+class TaskType(Enum):
     CLASSIFICATION = 0
     REGRESSION = 1
 
@@ -409,7 +409,7 @@ class LogisticRegressionWithSummaries(nn.Module):
     def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature)).to(self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
@@ -616,7 +616,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                  top_k = '',
                  top_k_num = 0,
                  output_dim = 2,
-                 mode = Mode.CLASSIFICATION,
+                 task_type = TaskType.CLASSIFICATION,
                  device = 'cuda',
                  ):
         """Initializes the LogisticRegressionWithSummariesAndBottleneck.
@@ -646,7 +646,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         self.top_k = top_k
         self.top_k_num = top_k_num
         self.output_dim = output_dim
-        self.mode = mode
+        self.task_type = task_type
         self.device = device
         
         if (self.zero_weight):
@@ -661,17 +661,17 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if mode == Mode.CLASSIFICATION and output_dim == 2:
+        if task_type == TaskType.CLASSIFICATION and output_dim == 2:
             self.output_af = nn.Sigmoid()
-        elif mode == Mode.CLASSIFICATION and output_dim > 2:
+        elif task_type == TaskType.CLASSIFICATION and output_dim > 2:
             self.output_af = nn.Softmax(dim=1)
-        elif mode == Mode.REGRESSION:
+        elif task_type == TaskType.REGRESSION:
             self.output_af = nn.Identity()
         
         num_total_c_weights = changing_dim * num_cutoff_times
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights).to(self.device)
+        self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights, device=self.device)
         
         if differentiate_cutoffs: 
             cutoff_vals = init_cutoffs(num_total_c_weights)
@@ -679,18 +679,18 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
             if cutoff_times_init_values is not None:
                 cutoff_vals = cutoff_times_init_values
                 
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).to(self.device))
+            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, num_total_c_weights))
 
-        self.times = torch.tensor(np.transpose(np.tile(range(time_len), (changing_dim, 1)))).to(self.device)
-        self.times = self.times.repeat(1, num_cutoff_times).to(self.device)
+        self.times = torch.tensor(np.transpose(np.tile(range(time_len), (changing_dim, 1))), device=self.device)
+        self.times = self.times.repeat(1, num_cutoff_times)
 
         self.weight_parser = WeightsParser()
         self.cs_parser = WeightsParser()
         add_all_parsers(self.weight_parser, input_dim, self.changing_dim)
         add_all_parsers(self.cs_parser, input_dim, self.changing_dim, 'cs')
         
-        self.lower_thresholds = nn.Parameter(torch.tensor(init_lower_thresholds(changing_dim)).to(self.device))
-        self.upper_thresholds = nn.Parameter(torch.tensor(init_upper_thresholds(changing_dim)).to(self.device))
+        self.lower_thresholds = nn.Parameter(torch.tensor(init_lower_thresholds(changing_dim), device=self.device))
+        self.upper_thresholds = nn.Parameter(torch.tensor(init_upper_thresholds(changing_dim), device=self.device))
         
         self.lower_thresholds.retain_grad()
         self.upper_thresholds.retain_grad()
@@ -701,7 +701,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         self.switch_temperature = switch_temperature
         
         # bottleneck layer
-        self.bottleneck = nn.Linear(self.weight_parser.num_weights,self.num_concepts)
+        self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
         self.sigmoid_bottleneck = nn.Sigmoid()
         
         # prediction task
@@ -727,15 +727,15 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                     i+=1
                 else:
                     break
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool)#.to(self.device)
+            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool) #device=self.device # during init still on cpu
             for i in range(len(top_k_inds)):
                 condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0)))#.to(self.device)))
+            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
     
     def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature)).to(self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
@@ -844,7 +844,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         
         # The x-values for this linear regression are the times.
         # Zero them out so that they are zero if the features are not measured.
-        linreg_x = torch.tensor(np.transpose(np.tile(range(self.time_len), (self.changing_dim, 1)))).to(self.device)
+        linreg_x = torch.tensor(np.transpose(np.tile(range(self.time_len), (self.changing_dim, 1))), device=self.device)
         linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_indicators
         
         # Now, compute the slope and standard error.
@@ -880,34 +880,18 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         below_threshold_feats = torch.sum(batch_measurement_indicators * below_thresh_weight_vector * lower_features, dim=1) / (torch.sum(batch_measurement_indicators * below_thresh_weight_vector, dim=1) + epsilon_denom)
         
         # feats_time_23 = patient_batch[:, 23, :]     
-        feats_time_5 = patient_batch[:, self.time_len-1, :] 
+        # time_feats = patient_batch[:, self.time_len-1, :] # use last timestamp
+        time_feats = patient_batch.reshape(patient_batch.shape[0], -1) # use full timeseries, keep sample size N and merge T x V 
+        
+        # print("patient_batch", patient_batch.shape)
+        # print("time_feats", time_feats.shape)
+        # print("time_len", self.time_len)
 
-        cat = torch.cat((feats_time_5.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
+        cat = torch.cat((time_feats.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
 
-        # print('mean')
-        # print(mean_feats[0, :])
-        # print('var')
-        # print(var_feats[0, :])
-        # print('ever meas')
-        # print(ever_measured_feats[0, :])
-        # print('mean indicat')
-        # print(mean_ind_feats[0, :])
-        # print('var ind')
-        # print(var_ind_feats[0, :])
-        # print('switch')
-        # print(switch_feats[0, :])
-        # print('slope')
-        # print(slope_feats[0, :])
-        # print('slope stderr')
-        # print(slope_stderr_feats[0, :])
-        # print('first time')
-        # print(first_time_feats[0, :])
-        # print('last time')
-        # print(last_time_feats[0, :])
-        # print('above thresh')
-        # print(above_threshold_feats[0, :])
-        # print('below thresh')
-        # print(below_threshold_feats[0, :])
+        # print("mean_feats", mean_feats.shape)
+        # print("var_feats", var_feats.shape)
+        # print("cat", cat.shape)
 
         return cat
     
@@ -1086,10 +1070,10 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
                     top_k_inds = []
                     for row in csvreader:
                         top_k_inds.append(int(row[1]))
-                    condition = torch.zeros(self.model.linear.weight.grad.shape, dtype=torch.bool).to(self.device)
+                    condition = torch.zeros(self.model.linear.weight.grad.shape, dtype=torch.bool, device=self.device)
                     for i in range(len(top_k_inds)):
                         condition[:,top_k_inds[i]]=True
-                    self.model.linear.weight.grad = torch.nn.Parameter(self.model.linear.weight.grad.where(condition, torch.tensor(0.0).to(self.device)))
+                    self.model.linear.weight.grad = torch.nn.Parameter(self.model.linear.weight.grad.where(condition, torch.tensor(0.0, device=self.device)))
 
                 # update all parameters
                 self.optimizer.step()
@@ -1122,7 +1106,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                  top_k_num = 0,
                  time_len = 6,
                  output_dim = 2,
-                 mode = Mode.CLASSIFICATION,
+                 task_type = TaskType.CLASSIFICATION,
                  device = 'cuda',
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
@@ -1157,7 +1141,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         self.top_k = top_k
         self.top_k_num = top_k_num
         self.output_dim = output_dim
-        self.mode = mode
+        self.task_type = task_type
         self.device = device
         
         self.model = LogisticRegressionWithSummariesAndBottleneck(input_dim, 
@@ -1175,7 +1159,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                                                 top_k_num = top_k_num,
                                                 time_len = time_len,
                                                 output_dim = output_dim,
-                                                mode = mode,
+                                                task_type = task_type,
                                                 device = device,
                                                 )
         
@@ -1237,10 +1221,10 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                     i+=1
                 else:
                     break
-            condition = torch.zeros(self.model.bottleneck.weight.shape, dtype=torch.bool).to(self.device)
+            condition = torch.zeros(self.model.bottleneck.weight.shape, dtype=torch.bool, device=self.device)
             for i in range(len(top_k_inds)):
                 condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.model.bottleneck.weight = torch.nn.Parameter(self.model.bottleneck.weight.where(condition, torch.tensor(0.0).to(self.device)))
+            self.model.bottleneck.weight = torch.nn.Parameter(self.model.bottleneck.weight.where(condition, torch.tensor(0.0, device=self.device)))
         sleep(0.5)
 
     def fit(self, train_loader, val_loader, p_weight, save_model_path, epochs=10000, save_every_n_epochs=100, patience=5, trial=None):
@@ -1334,11 +1318,11 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         return
 
     def compute_loss(self, yb, y_pred, p_weight):
-        if self.mode == Mode.CLASSIFICATION and self.output_dim == 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 2:
             loss = binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight)
-        elif self.mode == Mode.CLASSIFICATION and self.output_dim > 2:
+        elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             loss = cross_entropy(y_pred, yb, weight = p_weight)
-        elif self.mode == Mode.REGRESSION:
+        elif self.task_type == TaskType.REGRESSION:
             loss = mse_loss(y_pred, yb)
         
         # Lasso regularization
@@ -1347,11 +1331,11 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         
         # Cosine_similarity regularization
         if self.num_concepts != 1:
-            concepts = torch.arange(self.num_concepts).to(self.device)
+            concepts = torch.arange(self.num_concepts, device=self.device)
             indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
 
             weights = self.model.bottleneck.weight[indices]  # Extract corresponding weight vectors
-            cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum().to(self.device)
+            cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
             
             loss = loss + self.cos_sim_lambda * cos_sim
         
