@@ -38,7 +38,7 @@ N_experiments = 1
 
 
 for r in range(1,2):
-    for c in range(1,9):
+    for c in range(4,5):
         filename = "bottleneck_r{}_c{}_gridsearch".format(r, c)
         # Write hyperparameters to csv file
         fields = ['num_concepts', 'opt_lr', 'opt_weight_decay', 'l1_lambda', 'cos_sim_lambda','test auc']

@@ -5,11 +5,10 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
-from torchmetrics import AUROC
+from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
 
 from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
 from param_initializations import *
@@ -67,8 +66,9 @@ val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=Tru
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
-input_dim = X_np[0].shape[1]
+time_len = X_np.shape[1]
 changing_dim = len(changing_vars)
+input_dim = X_np.shape[2]
 
 
 experiment_folder = FLAGS.dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
@@ -103,20 +103,20 @@ row=[0 if el == 0 else el for el in bottleneck_row]
 
 set_seed(FLAGS.split_random_state)
 logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
-                                                                            changing_dim,
-                                                                            9,                     
-                                                                            n_concepts,
-                                                                            True,
-                                                                            init_cutoffs_to_zero, 
-                                                                            init_rand_lower_thresholds, 
-                                                                            init_rand_upper_thresholds,
-                                                                            cutoff_times_temperature=1.0,
-                                                                            cutoff_times_init_values=None,
-                                                                            opt_lr = row[1],
-                                                                            opt_weight_decay = row[2],
-                                                                            l1_lambda=row[3],
-                                                                            cos_sim_lambda = row[4]
-                                                                            )
+                                                                        changing_dim,
+                                                                        9,                     
+                                                                        n_concepts,
+                                                                        True,
+                                                                        init_cutoffs_to_zero, 
+                                                                        init_rand_lower_thresholds, 
+                                                                        init_rand_upper_thresholds,
+                                                                        cutoff_times_temperature=1.0,
+                                                                        cutoff_times_init_values=None,
+                                                                        opt_lr = row[1],
+                                                                        opt_weight_decay = row[2],
+                                                                        l1_lambda=row[3],
+                                                                        cos_sim_lambda = row[4]
+                                                                        )
 logregbottleneck.cuda()
 
 logregbottleneck.fit(train_loader, val_loader, p_weight, 
@@ -125,8 +125,9 @@ logregbottleneck.fit(train_loader, val_loader, p_weight,
                      save_every_n_epochs=10)
 
 
-auroc_metric = AUROC(task="binary").cuda()
-results = greedy_selection(auroc_metric, test_loader, topkinds, logregbottleneck)
+auroc_metric = BinaryAUROC().cuda()
+acc_metric = BinaryAccuracy().cuda()
+results = greedy_selection(auroc_metric, test_loader, topkinds, logregbottleneck, track_metrics=[acc_metric])
 
 
 filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state, n_concepts)

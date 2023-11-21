@@ -118,4 +118,5 @@ def myPreprocessed():
     X = np.load("/workdir/data/mimic-iii/vasopressor-Xdata.npy")
     y = np.load("/workdir/data/mimic-iii/vasopressor-Ylogits.npy")
     column_names = np.load("/workdir/data/mimic-iii/vasopressor-column_names.npy", allow_pickle=True)
-    return X, y, changing_vars, column_names
+    static_names = list(column_names[-8:])
+    return X, y, changing_vars, static_names

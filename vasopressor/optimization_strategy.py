@@ -58,6 +58,7 @@ def greedy_selection(optimize_metric: Metric, test_loader: DataLoader, top_k_ind
             if track_metrics:
                 wrapper.model.bottleneck.weight = torch.nn.Parameter(wrapper.model.bottleneck.weight.where(condition, torch.tensor(0.0).to(device)))
                 for name, metric in track_metrics.items():
+                    metric.reset()
                     for i, (X_test, y_test) in enumerate(test_loader):
                         X_test, y_test = X_test.to(device), y_test.to(device)
                         y_pred = wrapper.forward_probabilities(X_test)

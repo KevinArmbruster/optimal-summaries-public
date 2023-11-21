@@ -36,27 +36,28 @@ class TaskType(Enum):
     REGRESSION = 1
 
 
-def add_all_parsers(p, input_dim, changing_dim, str_type = 'linear'):
+def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, time_len = 1, str_type = 'linear'):
     if str_type == 'linear':
-        p.add_shape(str(str_type) + '_time_23_', input_dim)
+        time_feat_dim = 2 * changing_dim * time_len + static_dim
+        parser.add_shape(str(str_type) + '_time_', time_feat_dim)
         
-    p.add_shape(str(str_type) + '_mean_', changing_dim)
-    p.add_shape(str(str_type) + '_var_', changing_dim)
-    p.add_shape(str(str_type) + '_ever_measured_', changing_dim)
-    p.add_shape(str(str_type) + '_mean_indicators_', changing_dim)
-    p.add_shape(str(str_type) + '_var_indicators_', changing_dim)
-    p.add_shape(str(str_type) + '_switches_', changing_dim)
+    parser.add_shape(str(str_type) + '_mean_', changing_dim)
+    parser.add_shape(str(str_type) + '_var_', changing_dim)
+    parser.add_shape(str(str_type) + '_ever_measured_', changing_dim)
+    parser.add_shape(str(str_type) + '_mean_indicators_', changing_dim)
+    parser.add_shape(str(str_type) + '_var_indicators_', changing_dim)
+    parser.add_shape(str(str_type) + '_switches_', changing_dim)
     
     # slope_indicators are the same weights for all of the slope features.
-    p.add_shape(str(str_type) + '_slope_', changing_dim)
+    parser.add_shape(str(str_type) + '_slope_', changing_dim)
     
     if str_type == 'linear':
-        p.add_shape(str(str_type) + '_slope_stderr_', changing_dim)
-        p.add_shape(str(str_type) + '_first_time_measured_', changing_dim)
-        p.add_shape(str(str_type) + '_last_time_measured_', changing_dim)
+        parser.add_shape(str(str_type) + '_slope_stderr_', changing_dim)
+        parser.add_shape(str(str_type) + '_first_time_measured_', changing_dim)
+        parser.add_shape(str(str_type) + '_last_time_measured_', changing_dim)
         
-    p.add_shape(str(str_type) + '_hours_above_threshold_', changing_dim)
-    p.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)
+    parser.add_shape(str(str_type) + '_hours_above_threshold_', changing_dim)
+    parser.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)
         
 
 def create_state_dict(self, epoch):
@@ -606,7 +607,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                  init_cutoffs, 
                  init_lower_thresholds, 
                  init_upper_thresholds,
-                 cutoff_times_temperature = 1.0,
+                 cutoff_times_temperature = 0.1,
                  cutoff_times_init_values = None,
                  thresholds_temperature = 0.1,
                  ever_measured_temperature = 0.1,
@@ -622,8 +623,8 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         """Initializes the LogisticRegressionWithSummariesAndBottleneck.
         
         Args:
-            input_dim (int): number of input dimensions
-            changing_dim (int): number of non-static input dimensions
+            input_dim (int): number of input dimensions == static_dim + 2 * changing_dim
+            changing_dim (int): number of non-static input dimensions, does not include indicators
             num_cutoff_tines (int): number of cutoff-time parameters
             differentiate_cutoffs (bool): indicator for whether cutoff-time parameters are learned
             init_cutoffs (function): function to initialize cutoff-time parameters
@@ -639,7 +640,9 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         super(LogisticRegressionWithSummariesAndBottleneck, self).__init__()
 
         self.time_len = time_len
+        self.input_dim = input_dim
         self.changing_dim = changing_dim
+        self.static_dim = input_dim - 2 * changing_dim
         self.num_cutoff_times = num_cutoff_times
         self.num_concepts = num_concepts
         self.zero_weight = zero_weight
@@ -686,8 +689,8 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
 
         self.weight_parser = WeightsParser()
         self.cs_parser = WeightsParser()
-        add_all_parsers(self.weight_parser, input_dim, self.changing_dim)
-        add_all_parsers(self.cs_parser, input_dim, self.changing_dim, 'cs')
+        add_all_parsers(self.weight_parser, self.changing_dim, self.static_dim, self.time_len)
+        add_all_parsers(self.cs_parser, self.changing_dim, str_type = 'cs')
         
         self.lower_thresholds = nn.Parameter(torch.tensor(init_lower_thresholds(changing_dim), device=self.device))
         self.upper_thresholds = nn.Parameter(torch.tensor(init_upper_thresholds(changing_dim), device=self.device))
@@ -740,6 +743,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
+        batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
         # batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
         weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.time_len, self.cs_parser.num_weights)
@@ -881,11 +885,14 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         
         # feats_time_23 = patient_batch[:, 23, :]     
         # time_feats = patient_batch[:, self.time_len-1, :] # use last timestamp
-        time_feats = patient_batch.reshape(patient_batch.shape[0], -1) # use full timeseries, keep sample size N and merge T x V 
+        
+        # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
+        changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
+        indicators_2d = batch_measurement_indicators.reshape(batch_measurement_indicators.shape[0], -1)
+        time_feats = torch.cat((changing_vars_2d, indicators_2d, batch_static_vars), dim=1)
         
         # print("patient_batch", patient_batch.shape)
         # print("time_feats", time_feats.shape)
-        # print("time_len", self.time_len)
 
         cat = torch.cat((time_feats.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
 
@@ -1095,7 +1102,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                  init_cutoffs, 
                  init_lower_thresholds, 
                  init_upper_thresholds, 
-                 cutoff_times_temperature = 1.0,
+                 cutoff_times_temperature = 0.1,
                  opt_lr = 1e-4,
                  opt_weight_decay = 0.,
                  cutoff_times_init_values = None,
@@ -1250,7 +1257,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         
         for epoch in tqdm(range(self.curr_epoch+1, epochs)):
             self.train()
-            epoch_loss = 0
+            train_loss = 0
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
                 Xb, yb = Xb.to(self.device), yb.to(self.device)
@@ -1261,7 +1268,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
 
                 loss.backward()
 
-                epoch_loss += loss.item() / len(train_loader)
+                train_loss += loss * Xb.size(0)
                 
                 # don't let weight update if zero weight
                 if (self.zero_weight):
@@ -1275,12 +1282,13 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                 # update all parameters
                 self.optimizer.step()
             
+            train_loss = train_loss / len(train_loader.sampler)
             
             if (epoch % save_every_n_epochs) == (-1 % save_every_n_epochs):
                 self.eval()
                 with torch.no_grad():
                     
-                    self.train_losses.append(epoch_loss)
+                    self.train_losses.append(train_loss.item())
                     
                     # Calculate validation set loss
                     val_loss = 0
@@ -1291,10 +1299,10 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                         self.model.zero_grad()
                         y_pred = self.model(Xb)
 
-                        val_loss += binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight) 
+                        val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
                     
-                    val_loss = val_loss.item() / len(val_loader)
-                    self.val_losses.append(val_loss)
+                    val_loss = val_loss / len(val_loader.sampler)
+                    self.val_losses.append(val_loss.item())
                     
                     state = create_state_dict(self, epoch)
                     
@@ -1310,7 +1318,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                         if trial.should_prune():
                             raise optuna.exceptions.TrialPruned()
             
-            rtpt.step(subtitle=f"loss={epoch_loss:2.2f}")
+            rtpt.step(subtitle=f"loss={train_loss:2.2f}")
             
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)

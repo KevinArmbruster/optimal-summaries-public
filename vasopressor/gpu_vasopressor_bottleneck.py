@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import torch
-from torchmetrics import AUROC
+from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset, DataLoader
 
@@ -89,9 +89,10 @@ val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=Fal
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
 test_loader = DataLoader(test_dataset, batch_size = X_test_pt.shape[0], shuffle=False, generator = torch.Generator(device=device))
 
-ts_length = X_np.shape[1]
-input_dim = X_np.shape[2] * ts_length
+time_len = X_np.shape[1]
 changing_dim = len(changing_vars)
+input_dim = X_np.shape[2]
+
 
 cutoff_init_fn = init_cutoffs_to_zero
 
@@ -151,7 +152,7 @@ torch.set_printoptions(precision=10)
 
 
 # get AUC
-auroc_metric = AUROC(task="binary").to(device)
+auroc_metric = BinaryAUROC().to(device)
 y_pred = logregbottleneck.forward_probabilities(X_test_pt)
 score = auroc_metric(y_pred, y_test_pt).item()
 
