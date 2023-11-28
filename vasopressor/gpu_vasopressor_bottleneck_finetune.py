@@ -168,7 +168,7 @@ set_seed(FLAGS.split_random_state)
 # train model
 logregbottleneck.fit(train_loader, val_loader, p_weight,
             save_model_path = model_path,
-            epochs=FLAGS.num_epochs,
+            max_epochs=FLAGS.num_epochs,
             save_every_n_epochs=FLAGS.save_every)
 
 torch.set_printoptions(precision=10)

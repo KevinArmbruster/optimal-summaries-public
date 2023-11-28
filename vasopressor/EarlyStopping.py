@@ -34,6 +34,7 @@ class EarlyStopping:
         
         if self.counter >= self.patience:
             print(f"Early Stopped")
+            self.best_state["early_stopping"] = True
             return True
         return False
     

@@ -121,7 +121,7 @@ logregbottleneck.cuda()
 
 logregbottleneck.fit(train_loader, val_loader, p_weight, 
                      save_model_path = experiment_folder + "/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1lambda_{}_cossimlambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
-                     epochs=10, 
+                     max_epochs=10, 
                      save_every_n_epochs=10)
 
 
