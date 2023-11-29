@@ -1129,7 +1129,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=100, patience=5, trial=None):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=100, patience=5, scheduler=None, trial=None):
         """
         
         Args:
@@ -1196,6 +1196,12 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
                     val_loss = val_loss / len(val_loader.sampler)
                     self.val_losses.append(val_loss.item())
                     
+                    if scheduler:
+                        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                            scheduler.step(val_loss)
+                        else:
+                            scheduler.step()
+                    
                     state = create_state_dict(self, epoch)
                     
                     if self.earlyStopping.check_improvement(val_loss, state):
@@ -1221,17 +1227,13 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
         if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 2:
             task_loss = binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight)
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
-            print("shapes", yb.shape, y_pred.shape)
-            print("sample 0 ", yb[0], y_pred[0])
             task_loss = cross_entropy(y_pred, yb, weight = p_weight)
         elif self.task_type == TaskType.REGRESSION:
             task_loss = mse_loss(y_pred, yb)
         else:
             print("Loss not defined!")
             exit()
-        
-        print()
-        
+                
         # Lasso regularization
         L1_norm = torch.norm(self.bottleneck.weight, 1)
         l1_loss = self.l1_lambda * L1_norm 
@@ -1247,5 +1249,4 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
-        print("task, l1, cossim: ", task_loss, l1_loss, cos_sim_loss)
         return task_loss + l1_loss + cos_sim_loss

@@ -61,7 +61,9 @@ class TimeSeriesDataset(Dataset):
 
 
 # %%
-def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, batch_size = 1024, scaler = StandardScaler(with_std=False)):
+def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, batch_size = 1024):
+    scaler = StandardScaler(with_std=False)
+    
     train, test = series.split_before(0.6)
     val, test = test.split_before(0.5)
     
@@ -81,6 +83,7 @@ def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, bat
     train_dataset = TimeSeriesDataset(X_train, y_train, time_len, window_stride, target_steps_ahead)
     train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
+
     val_og = val.pd_dataframe()
     val = scaler.transform(val_og)
     val = pd.DataFrame(val, columns=val_og.columns)
@@ -94,6 +97,7 @@ def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, bat
     
     val_dataset = TimeSeriesDataset(X_val, y_val, time_len, window_stride, target_steps_ahead)
     val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
+
 
     test_og = test.pd_dataframe()
     test = scaler.transform(test_og)
@@ -169,27 +173,55 @@ def initializeModel(trial, n_concepts):
     logregbottleneck.cuda()
     return logregbottleneck
 
+# %%
+
+def suggest_lr_scheduler(trial: optuna.trial, model):
+    lr_scheduler = trial.suggest_categorical('lr_scheduler', [None, 'ReduceLROnPlateau', 'CosineAnnealingLR', 'StepLR'])
+    
+    if lr_scheduler == 'ReduceLROnPlateau':
+        factor = trial.suggest_float('factor', 0.1, 0.9, step=0.1)
+        
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(model.optimizer, mode="min", factor=factor, patience=2)
+        
+    elif lr_scheduler == 'CosineAnnealingLR':
+        T_max = trial.suggest_int('T_max', 1000, 3000)
+        eta_min = trial.suggest_float('eta_min', 1e-5, 1e-2, log=True)
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model.optimizer, T_max=T_max, eta_min=eta_min)
+        
+    elif lr_scheduler == 'StepLR':
+        step_size = trial.suggest_int('step_size', 100, 1000)
+        gamma = trial.suggest_float('gamma', 0.1, 0.9, step=0.1)
+        
+        scheduler = torch.optim.lr_scheduler.StepLR(model.optimizer, step_size=step_size, gamma=gamma)
+        
+    elif lr_scheduler == None:
+        scheduler = None
+    
+    return scheduler
+
 
 # %%
 def objective(trial):
     train_loader, val_loader, test_loader, scaler = preprocess_data(series, time_len, target_steps_ahead=target_steps_ahead)
     model = initializeModel(trial, n_concepts = 18)
-    model.fit(train_loader, val_loader, None, None, 2000, trial=trial)
+    scheduler = suggest_lr_scheduler(trial, model)
+    val_loss = model.fit(train_loader, val_loader, None, None, 3000, scheduler=scheduler, trial=trial)
     
-    model.eval()
-    with torch.no_grad():
-        for batch_idx, (Xb, yb) in enumerate(test_loader):
-            Xb, yb = Xb.to(device), yb.to(device)
-            preds = model.forward(Xb)
+    # model.eval()
+    # with torch.no_grad():
+    #     for batch_idx, (Xb, yb) in enumerate(test_loader):
+    #         Xb, yb = Xb.to(device), yb.to(device)
+    #         preds = model.forward(Xb)
             
-            # mae = mae_metric(preds, yb).item()
-            mse = mse_metric(preds, yb).item()
-        # mae = mae_metric.compute().item()
-        mse = mse_metric.compute().item()
-        # mae_metric.reset()
-        mse_metric.reset()
+    #         # mae = mae_metric(preds, yb).item()
+    #         mse = mse_metric(preds, yb).item()
+    #     # mae = mae_metric.compute().item()
+    #     mse = mse_metric.compute().item()
+    #     # mae_metric.reset()
+    #     mse_metric.reset()
     
-    return mse
+    return val_loss
 
 
 
@@ -200,7 +232,7 @@ changing_dim = len(series.columns)
 input_dim = 2 * changing_dim
 
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=1, n_trials=100, timeout=60 * 60 * 18)
+study.optimize(objective, n_jobs=10, timeout=60 * 60 * 11)
 
 fig = plot_optimization_history(study)
 fig.write_image("plot_optimization_history.png") 
