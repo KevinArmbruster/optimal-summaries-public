@@ -303,7 +303,7 @@ class LogisticRegressionWithSummaries(nn.Module):
                  thresholds_temperature = 0.1,
                  ever_measured_temperature = 0.1,
                  switch_temperature = 0.1,
-                 time_len = 6,
+                 seq_len = 6,
                  top_k = ''
                  ):
         """Initializes the LogisticRegressionWithSummaries.
@@ -320,11 +320,11 @@ class LogisticRegressionWithSummaries(nn.Module):
             thresholds_temperature (float): temperature used to calculate threshold summaries
             ever_measured_temperature (float): temperature used to calculate measurement indicator summaries
             switch_temperature (float): temperature used to calculate switch summaries
-            time_len (int): number of time-steps in each trajectory
+            seq_len (int): number of time-steps in each trajectory
         """
         super(LogisticRegressionWithSummaries, self).__init__()
 
-        self.time_len = time_len
+        self.seq_len = seq_len
         self.changing_dim = changing_dim
         self.num_cutoff_times = num_cutoff_times
         self.top_k = top_k
@@ -352,7 +352,7 @@ class LogisticRegressionWithSummaries(nn.Module):
                 
             self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
             
-        self.times = torch.tensor(np.transpose(np.tile(range(time_len), (changing_dim, 1)))).cuda()
+        self.times = torch.tensor(np.transpose(np.tile(range(seq_len), (changing_dim, 1)))).cuda()
         self.times = self.times.repeat(1, num_cutoff_times).cuda()
 
         self.weight_parser = WeightsParser()
@@ -395,7 +395,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.time_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
@@ -497,7 +497,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         
         # The x-values for this linear regression are the times.
         # Zero them out so that they are zero if the features are not measured.
-        linreg_x = torch.tensor(np.transpose(np.tile(range(self.time_len), (self.changing_dim, 1)))).cuda()
+        linreg_x = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.changing_dim, 1)))).cuda()
         linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_indicators
         
         # Now, compute the slope and standard error.
@@ -589,7 +589,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                  thresholds_temperature = 0.1,
                  ever_measured_temperature = 0.1,
                  switch_temperature = 0.1,
-                 time_len = 6,
+                 seq_len = 6,
                  zero_weight = False,
                  top_k = '',
                  top_k_num = 0
@@ -608,12 +608,12 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
             thresholds_temperature (float): temperature used to calculate threshold summaries
             ever_measured_temperature (float): temperature used to calculate measurement indicator summaries
             switch_temperature (float): temperature used to calculate switch summaries
-            time_len (int): number of time-steps in each trajectory
+            seq_len (int): number of time-steps in each trajectory
             num_concepts (int): number of concepts in bottleneck layer
         """
         super(LogisticRegressionWithSummariesAndBottleneck, self).__init__()
 
-        self.time_len = time_len
+        self.seq_len = seq_len
         self.changing_dim = changing_dim
         self.num_cutoff_times = num_cutoff_times
         self.num_concepts = num_concepts
@@ -646,7 +646,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                 
             self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
             
-        self.times = torch.tensor(np.transpose(np.tile(range(time_len), (changing_dim, 1)))).cuda()
+        self.times = torch.tensor(np.transpose(np.tile(range(seq_len), (changing_dim, 1)))).cuda()
         self.times = self.times.repeat(1, num_cutoff_times).cuda()
 
         self.weight_parser = WeightsParser()
@@ -707,7 +707,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.time_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
@@ -809,7 +809,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         
         # The x-values for this linear regression are the times.
         # Zero them out so that they are zero if the features are not measured.
-        linreg_x = torch.tensor(np.transpose(np.tile(range(self.time_len), (self.changing_dim, 1)))).cuda()
+        linreg_x = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.changing_dim, 1)))).cuda()
         linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_indicators
         
         # Now, compute the slope and standard error.
@@ -917,7 +917,7 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
             init_cutoffs (function): function to initialize cutoff-time parameters
             init_lower_thresholds (function): function to initialize lower threshold parameters
             init_upper_thresholds (function): function to initialize upper threshold parameters
-            time_len (int): number of time-steps in each trajectory
+            seq_len (int): number of time-steps in each trajectory
             -- 
             alpha (float): multiplicative coefficient of the horseshoe loss term
             tau (float): constant used to calculate horseshoe loss term
@@ -1088,7 +1088,7 @@ class LogisticRegressionWithSummariesAndBottleneck_Wrapper(nn.Module):
             init_cutoffs (function): function to initialize cutoff-time parameters
             init_lower_thresholds (function): function to initialize lower threshold parameters
             init_upper_thresholds (function): function to initialize upper threshold parameters
-            time_len (int): number of time-steps in each trajectory
+            seq_len (int): number of time-steps in each trajectory
             -- 
             alpha (float): multiplicative coefficient of the horseshoe loss term
             tau (float): constant used to calculate horseshoe loss term

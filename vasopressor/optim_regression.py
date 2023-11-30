@@ -39,29 +39,29 @@ print(series.end_time())
 
 # %%
 class TimeSeriesDataset(Dataset):
-    def __init__(self, data, targets, T, window_stride=1, target_steps_ahead=1):
+    def __init__(self, data, targets, T, window_stride=1, pred_len=1):
         self.data = data
         self.targets = targets
         assert targets.size(0) == data.size(0)
         self.T = T # time window
         self.window_stride = window_stride
-        self.target_steps_ahead = target_steps_ahead
+        self.pred_len = pred_len
         self.N, self.V = data.shape
 
     def __len__(self):
-        return len(range(0, self.N - self.T - self.target_steps_ahead + 1, self.window_stride))
+        return len(range(0, self.N - self.T - self.pred_len + 1, self.window_stride))
 
     def __getitem__(self, idx):
         start = idx * self.window_stride
         end = start + self.T
 
         X = self.data[start:end]
-        y = self.targets[end:end + self.target_steps_ahead].squeeze(-1)
+        y = self.targets[end:end + self.pred_len].squeeze(-1)
         return X, y
 
 
 # %%
-def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, batch_size = 1024):
+def preprocess_data(series, seq_len, window_stride=1, pred_len=1, batch_size = 1024):
     scaler = StandardScaler(with_std=False)
     
     train, test = series.split_before(0.6)
@@ -80,7 +80,7 @@ def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, bat
     indicators = torch.isfinite(X_train)
     X_train = torch.cat([X_train, indicators], axis=1)
     
-    train_dataset = TimeSeriesDataset(X_train, y_train, time_len, window_stride, target_steps_ahead)
+    train_dataset = TimeSeriesDataset(X_train, y_train, seq_len, window_stride, pred_len)
     train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
 
@@ -95,7 +95,7 @@ def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, bat
     indicators = torch.isfinite(X_val)
     X_val = torch.cat([X_val, indicators], axis=1)
     
-    val_dataset = TimeSeriesDataset(X_val, y_val, time_len, window_stride, target_steps_ahead)
+    val_dataset = TimeSeriesDataset(X_val, y_val, seq_len, window_stride, pred_len)
     val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
 
@@ -110,15 +110,15 @@ def preprocess_data(series, time_len, window_stride=1, target_steps_ahead=1, bat
     indicators = torch.isfinite(X_test)
     X_test = torch.cat([X_test, indicators], axis=1)
     
-    test_dataset = TimeSeriesDataset(X_test, y_test, time_len, window_stride, target_steps_ahead)
+    test_dataset = TimeSeriesDataset(X_test, y_test, seq_len, window_stride, pred_len)
     test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
     
     return train_loader, val_loader, test_loader, scaler
 
 
 # %%
-time_len = 10
-train_loader, val_loader, test_loader, scaler = preprocess_data(series, time_len, target_steps_ahead=24)
+seq_len = 10
+train_loader, val_loader, test_loader, scaler = preprocess_data(series, seq_len, pred_len=24)
 
 for X,y in train_loader:
     print(X.shape)
@@ -138,12 +138,12 @@ def plot_losses(train_losses, val_losses):
 # ## Regression
 
 # %%
-time_len = 96
-target_steps_ahead = 96
+seq_len = 96
+pred_len = 96
 
 
 # %%
-experiment_folder = f"/workdir/optimal-summaries-public/vasopressor/models/etth1/forecasting-L{time_len}-T{target_steps_ahead}/"
+experiment_folder = f"/workdir/optimal-summaries-public/vasopressor/models/etth1/forecasting-L{seq_len}-T{pred_len}/"
 model_path = experiment_folder + "forecasting_c{}.pt"
 random_seed = 1
 
@@ -162,12 +162,12 @@ def initializeModel(trial, n_concepts):
     logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim = input_dim, 
                                                 changing_dim = changing_dim,
                                                 num_concepts = n_concepts,
-                                                time_len = time_len,
+                                                seq_len = seq_len,
                                                 opt_lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True),
                                                 opt_weight_decay = trial.suggest_float("wd", 1e-5, 1e-1, log=True),
                                                 l1_lambda = 0.001, #trial.suggest_float("l1", 1e-5, 1e-1, log=True),
                                                 cos_sim_lambda = 0.01, #trial.suggest_float("cossim", 1e-5, 1e-1, log=True),
-                                                output_dim = target_steps_ahead,
+                                                output_dim = pred_len,
                                                 task_type = TaskType.REGRESSION,
                                                 )
     logregbottleneck.cuda()
@@ -203,7 +203,7 @@ def suggest_lr_scheduler(trial: optuna.trial, model):
 
 # %%
 def objective(trial):
-    train_loader, val_loader, test_loader, scaler = preprocess_data(series, time_len, target_steps_ahead=target_steps_ahead)
+    train_loader, val_loader, test_loader, scaler = preprocess_data(series, seq_len, pred_len=pred_len)
     model = initializeModel(trial, n_concepts = 18)
     scheduler = suggest_lr_scheduler(trial, model)
     val_loss = model.fit(train_loader, val_loader, None, None, 3000, scheduler=scheduler, trial=trial)

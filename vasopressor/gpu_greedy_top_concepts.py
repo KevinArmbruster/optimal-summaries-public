@@ -66,7 +66,7 @@ val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=Tru
 test_dataset = TensorDataset(X_test_pt, y_test_pt)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
 
-time_len = X_np.shape[1]
+seq_len = X_np.shape[1]
 changing_dim = len(changing_vars)
 input_dim = X_np.shape[2]
 
