@@ -11,7 +11,7 @@ from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset, DataLoader
 
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from models import CBM
 from param_initializations import *
 from preprocess_helpers import myPreprocessed
 
@@ -122,7 +122,7 @@ if len(FLAGS.cutoff_times_init_values_filepath) > 0:
 set_seed(FLAGS.split_random_state)
 
 # initialize model
-logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
+logregbottleneck = CBM(input_dim, 
                                                  changing_dim, 
                                                  9,
                                                  FLAGS.num_concepts,

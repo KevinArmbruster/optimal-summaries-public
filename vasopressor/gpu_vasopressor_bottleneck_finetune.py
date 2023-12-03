@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 from weights_parser import WeightsParser
 
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from models import CBM
 
 from custom_losses import custom_bce_horseshoe
 from param_initializations import *
@@ -144,7 +144,7 @@ if len(FLAGS.cutoff_times_init_values_filepath) > 0:
 set_seed(FLAGS.split_random_state)
 
     # initialize model
-logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
+logregbottleneck = CBM(input_dim, 
                                                     changing_dim, 
                                                     9,
                                                     FLAGS.num_concepts,

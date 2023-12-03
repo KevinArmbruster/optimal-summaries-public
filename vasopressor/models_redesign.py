@@ -768,7 +768,7 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
             rtpt.step(subtitle=f"loss={loss:2.2f}")
 
 
-class CBM(nn.Module):
+class CBM_redesigned(nn.Module):
     def __init__(self, 
                  input_dim, 
                  changing_dim, 
@@ -806,7 +806,7 @@ class CBM(nn.Module):
             cos_sim_lambda (float): lambda value for cosine similarity regularization
             
         """
-        super(CBM, self).__init__()
+        super(CBM_redesigned, self).__init__()
         
         self.input_dim = input_dim
         self.changing_dim = changing_dim
@@ -876,11 +876,19 @@ class CBM(nn.Module):
         
         
         # bottleneck layer
+        # original
         # in B x T x V
-        self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
+        # self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
         # -> B x T x C
         
+        # new
+        # in B x V x T
+        self.bottleneck = nn.Linear(self.seq_len, self.num_concepts)
+        # -> B x V x C
+        
         self.sigmoid_bottleneck = nn.Sigmoid()
+        self.flatten = nn.Flatten()
+        # -> B x V*C
         
         # prediction task
         self.linear = nn.LazyLinear(self.output_dim)
@@ -1063,18 +1071,23 @@ class CBM(nn.Module):
 
         cat = torch.cat((time_feats.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
 
+        cat2 = torch.cat([patient_batch, mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()], axis=-1)
+        
         # print("mean_feats", mean_feats.shape)
         # print("var_feats", var_feats.shape)
-        # print("cat", cat.shape)
+        print("cat", cat.shape)
 
         return cat
     
     def forward(self, patient_batch, epsilon_denom=0.01):
-        # Encodes the patient_batch, then computes the forward.
+        print(patient_batch.shape)
         encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
-        bottleneck = self.bottleneck(encoded)
-        activation = self.sigmoid_bottleneck(bottleneck)
-        return self.linear(activation)
+        print(encoded.shape)
+        rearranged = rearrange(encoded, "b t v -> b v t")
+        bottleneck = self.bottleneck(rearranged)
+        bottleneck = self.flatten(bottleneck)
+        sigmoid_bottleneck = self.sigmoid_bottleneck(bottleneck)
+        return self.linear(sigmoid_bottleneck)
     
     def forward_probabilities(self, patient_batch):
         output = self.forward(patient_batch)
