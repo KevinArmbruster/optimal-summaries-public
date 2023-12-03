@@ -768,7 +768,7 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
             rtpt.step(subtitle=f"loss={loss:2.2f}")
 
 
-class CBM(nn.Module):
+class CBM_redesigned(nn.Module):
     def __init__(self, 
                  input_dim, 
                  changing_dim, 
@@ -806,7 +806,7 @@ class CBM(nn.Module):
             cos_sim_lambda (float): lambda value for cosine similarity regularization
             
         """
-        super(CBM, self).__init__()
+        super(CBM_redesigned, self).__init__()
         
         self.input_dim = input_dim
         self.changing_dim = changing_dim
@@ -876,11 +876,19 @@ class CBM(nn.Module):
         
         
         # bottleneck layer
+        # original
         # in B x T x V
-        self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
+        # self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
         # -> B x T x C
         
+        # new
+        # in B x V x T
+        self.bottleneck = nn.Linear(self.seq_len, self.num_concepts)
+        # -> B x V x C
+        
         self.sigmoid_bottleneck = nn.Sigmoid()
+        self.flatten = nn.Flatten()
+        # -> B x V*C
         
         # prediction task
         self.linear = nn.LazyLinear(self.output_dim)
@@ -1054,27 +1062,36 @@ class CBM(nn.Module):
         # time_feats = patient_batch[:, self.seq_len-1, :] # use last timestamp
         
         # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
-        changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
-        indicators_2d = batch_measurement_indicators.reshape(batch_measurement_indicators.shape[0], -1)
-        time_feats = torch.cat((changing_vars_2d, indicators_2d, batch_static_vars), dim=1)
+        # changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
+        # indicators_2d = batch_measurement_indicators.reshape(batch_measurement_indicators.shape[0], -1)
+        # time_feats = torch.cat((changing_vars_2d, indicators_2d, batch_static_vars), dim=1)
         
         # print("patient_batch", patient_batch.shape)
         # print("time_feats", time_feats.shape)
 
-        cat = torch.cat((time_feats.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
-
-        # print("mean_feats", mean_feats.shape)
-        # print("var_feats", var_feats.shape)
+        summaries = [mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), 
+                         switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), 
+                         above_threshold_feats.float(), below_threshold_feats.float()]
+        # print("summaries", len(summaries))
+        
+        time_dim_index = 1
+        summaries = [tensor.unsqueeze(time_dim_index).expand(-1, self.seq_len, -1) for tensor in summaries]
+        
+        cat = torch.cat([patient_batch] + summaries, axis=-1)
+        
+        # print("mean_feats", summaries[0].shape)
+        # print("var_feats", summaries[1].shape)
         # print("cat", cat.shape)
 
         return cat
     
     def forward(self, patient_batch, epsilon_denom=0.01):
-        # Encodes the patient_batch, then computes the forward.
         encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
-        bottleneck = self.bottleneck(encoded)
-        activation = self.sigmoid_bottleneck(bottleneck)
-        return self.linear(activation)
+        rearranged = rearrange(encoded, "b t v -> b v t")
+        bottleneck = self.bottleneck(rearranged)
+        bottleneck = self.flatten(bottleneck)
+        sigmoid_bottleneck = self.sigmoid_bottleneck(bottleneck)
+        return self.linear(sigmoid_bottleneck)
     
     def forward_probabilities(self, patient_batch):
         output = self.forward(patient_batch)

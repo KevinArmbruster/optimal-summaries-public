@@ -3,12 +3,12 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from typing import List
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from models import CBM
 from tqdm import tqdm
 from torchmetrics import Metric
 from collections import defaultdict
 
-def greedy_selection(optimize_metric: Metric, test_loader: DataLoader, top_k_inds: List[List[int]], wrapper: LogisticRegressionWithSummariesAndBottleneck_Wrapper, device = 'cuda', track_metrics: dict[str, Metric] = None):
+def greedy_selection(optimize_metric: Metric, test_loader: DataLoader, top_k_inds: List[List[int]], wrapper: CBM, device = 'cuda', track_metrics: dict[str, Metric] = None):
     optimize_metric.reset()
     num_concepts = wrapper.get_num_concepts()
     FEATURE_BUDGET = 10 * num_concepts

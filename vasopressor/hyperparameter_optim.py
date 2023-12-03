@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
 from preprocess_helpers import myPreprocessed
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from models import CBM
 
 
 # %%
@@ -90,7 +90,7 @@ def init_zeros(d):
 # %%
 def initializeModel(trial, num_concepts = 4):
 #     vals_to_init = init_cutoffs_randomly(changing_dim * 9)
-    logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
+    logregbottleneck = CBM(input_dim, 
                                                 changing_dim, 
                                                 9,                     
                                                 num_concepts,

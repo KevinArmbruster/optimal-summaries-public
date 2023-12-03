@@ -10,7 +10,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
 
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper
+from models import CBM
 from param_initializations import *
 from preprocess_helpers import myPreprocessed
 from optimization_strategy import greedy_selection
@@ -102,7 +102,7 @@ row=[0 if el == 0 else el for el in bottleneck_row]
 
 
 set_seed(FLAGS.split_random_state)
-logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim, 
+logregbottleneck = CBM(input_dim, 
                                                                         changing_dim,
                                                                         9,                     
                                                                         n_concepts,

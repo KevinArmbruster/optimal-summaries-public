@@ -21,7 +21,7 @@ import optuna
 from optuna.trial import TrialState
 from optuna.visualization import plot_optimization_history, plot_param_importances, plot_timeline
 
-from models import LogisticRegressionWithSummariesAndBottleneck_Wrapper, TaskType
+from models import CBM, TaskType
 from preprocess_helpers import *
 from helper import *
 from param_initializations import *
@@ -159,7 +159,7 @@ mse_metric = MeanSquaredError().to(device)
 # %%
 def initializeModel(trial, n_concepts):
 #     vals_to_init = init_cutoffs_randomly(changing_dim * 9)
-    logregbottleneck = LogisticRegressionWithSummariesAndBottleneck_Wrapper(input_dim = input_dim, 
+    logregbottleneck = CBM(input_dim = input_dim, 
                                                 changing_dim = changing_dim,
                                                 num_concepts = n_concepts,
                                                 seq_len = seq_len,
