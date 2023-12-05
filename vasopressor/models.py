@@ -16,7 +16,7 @@ from torchmetrics import AUROC, Accuracy, MeanSquaredError
 
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
-from EarlyStopping import EarlyStopping
+from mimic-iii.optimal-summaries-public.vasopressor.EarlyStopping import EarlyStopping
 
 from tqdm import tqdm
 from time import sleep

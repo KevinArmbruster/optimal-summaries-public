@@ -16,7 +16,7 @@ from torchmetrics import AUROC, Accuracy, MeanSquaredError
 
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
-from EarlyStopping import EarlyStopping
+from mimic-iii.optimal-summaries-public.vasopressor.EarlyStopping import EarlyStopping
 
 from tqdm import tqdm
 from time import sleep
@@ -1151,7 +1151,7 @@ class CBM_redesigned(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=100, patience=5, scheduler=None, trial=None):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=100, patience=5, warmup_epochs=0, scheduler=None, trial=None):
         """
         
         Args:
@@ -1169,7 +1169,7 @@ class CBM_redesigned(nn.Module):
         self.val_losses = []
         self.curr_epoch = -1
         
-        self.earlyStopping = EarlyStopping(patience=patience, min_delta=0, mode=EarlyStopping.Mode.MIN)
+        self.earlyStopping = EarlyStopping(patience=patience, warmup_epochs=warmup_epochs)
         early_stopped = self._load_model(save_model_path)
         
         if early_stopped:
