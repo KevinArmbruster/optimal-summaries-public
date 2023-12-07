@@ -1134,7 +1134,7 @@ class CBM(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=100, patience=5, scheduler=None, trial=None):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=20, patience=10, warmup_epochs=0, scheduler=None, trial=None):
         """
         
         Args:
