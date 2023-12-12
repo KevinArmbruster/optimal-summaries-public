@@ -836,10 +836,7 @@ class CBM(nn.Module):
 
     
     def create_model(self):
-        self.sigmoid_for_weights = nn.Sigmoid()
-        self.sigmoid_for_ever_measured = nn.Sigmoid()        
-        self.upper_thresh_sigmoid = nn.Sigmoid()
-        self.lower_thresh_sigmoid = nn.Sigmoid()
+        self.sigmoid = nn.Sigmoid()
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
@@ -879,9 +876,7 @@ class CBM(nn.Module):
         # in B x T x V
         self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
         # -> B x T x C
-        
-        self.sigmoid_bottleneck = nn.Sigmoid()
-        
+                
         # prediction task
         self.linear = nn.LazyLinear(self.output_dim)
         
@@ -919,7 +914,7 @@ class CBM(nn.Module):
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         
         # MEAN FEATURES
         # Calculate \sum_t (w_t * x_t * m_t)
@@ -945,7 +940,7 @@ class CBM(nn.Module):
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_ever_measured_']
         ever_measured_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        ever_measured_feats = self.sigmoid_for_ever_measured( torch.sum(ever_measured_weight_vector * batch_measurement_indicators, dim=1) / (self.ever_measured_temperature * torch.sum(ever_measured_weight_vector, dim=1) + epsilon_denom)) - 0.5
+        ever_measured_feats = self.sigmoid( torch.sum(ever_measured_weight_vector * batch_measurement_indicators, dim=1) / (self.ever_measured_temperature * torch.sum(ever_measured_weight_vector, dim=1) + epsilon_denom)) - 0.5
         
         
         # MEAN OF INDICATOR SEQUENCE
@@ -1042,8 +1037,8 @@ class CBM(nn.Module):
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_hours_below_threshold_']
         below_thresh_weight_vector = weight_vector[:, :, start_i : end_i]
             
-        upper_features = self.upper_thresh_sigmoid((batch_changing_vars - self.upper_thresholds)/self.thresh_temperature)
-        lower_features = self.lower_thresh_sigmoid((self.lower_thresholds - batch_changing_vars)/self.thresh_temperature)
+        upper_features = self.sigmoid((batch_changing_vars - self.upper_thresholds)/self.thresh_temperature)
+        lower_features = self.sigmoid((self.lower_thresholds - batch_changing_vars)/self.thresh_temperature)
                 
         # (batch, timestep, features)
         # sum upper_features and lower_features across timesteps
@@ -1073,7 +1068,7 @@ class CBM(nn.Module):
         # Encodes the patient_batch, then computes the forward.
         encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
         bottleneck = self.bottleneck(encoded)
-        activation = self.sigmoid_bottleneck(bottleneck)
+        activation = self.sigmoid(bottleneck)
         return self.linear(activation)
     
     def forward_probabilities(self, patient_batch):
