@@ -196,7 +196,7 @@ class CBM(nn.Module):
         
         elif not self.use_summaries_for_atomics:
             # in B x V x T
-            self.layer_time_to_atomics = nn.Linear(self.seq_len, self.num_atomics)
+            self.layer_time_to_atomics = nn.Linear(2 * self.seq_len, self.num_atomics)
             # -> B x V x A
             self.flatten = nn.Flatten()
             # concat summaries to atomics during forward
@@ -423,24 +423,25 @@ class CBM(nn.Module):
             # print("after concepts", concepts.shape)
         
         elif not self.use_summaries_for_atomics:
-            rearranged = rearrange(patient_batch, "b t v -> b v t")
+            cat = torch.cat([batch_changing_vars, batch_measurement_indicators], axis=1) # cat along time instead of var
+            rearranged = rearrange(cat, "b t v -> b v t")
+            # print("rearranged", rearranged.shape)
             
             atomics = self.layer_time_to_atomics(rearranged)
             atomics = self.atomic_activation_func(atomics) # relu?
-            print("after atomics", atomics.shape)
+            # print("after atomics", atomics.shape)
             flat = self.flatten(atomics)
-            print("after flatten", flat.shape)
+            # print("after flatten", flat.shape)
             
             # concat activation and summaries
             atmomics_and_summaries = torch.cat([flat] + summaries, axis=-1)
-            print("atmomics_and_summaries", atmomics_and_summaries.shape)
+            # print("atmomics_and_summaries", atmomics_and_summaries.shape)
             
             concepts = self.layer_to_concepts(atmomics_and_summaries)
             concepts = self.concept_activation_func(concepts)
-            print("after concepts", concepts.shape)
+            # print("after concepts", concepts.shape)
         
         out = self.layer_output(concepts)
-        print("out", out.shape)
         return out
     
     def forward_probabilities(self, patient_batch):

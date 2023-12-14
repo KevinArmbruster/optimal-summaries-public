@@ -1,133 +1,194 @@
 # %%
-import os
+
+from darts.datasets import ETTh1Dataset
+from darts.models import NLinearModel
+from darts.metrics.metrics import mae, mse
 import numpy as np
+import pandas as pd
+import torch
+import random
+import csv
+import datetime
+import os
+import gc
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import matplotlib.pyplot as plt
+import torch
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import LambdaLR
+from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+
 import optuna
 from optuna.trial import TrialState
 from optuna.visualization import plot_optimization_history, plot_param_importances, plot_timeline
-import torch
-import torch.utils.data
-from torch.utils.data import TensorDataset, DataLoader
-from torch.autograd import Variable
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
 
-from preprocess_helpers import myPreprocessed
-from models import CBM
+import models
+import models_3d_concepts_on_time
+import models_3d_atomics_on_variate_to_concepts
+from preprocess_helpers import *
+from helper import *
+from param_initializations import *
+from optimization_strategy import greedy_selection
 
-
-# %%
-X_np, Y_logits, changing_vars, data_cols = myPreprocessed()
-input_dim = X_np.shape[2]
-changing_dim = len(changing_vars)
-
-# %%
-DEVICE = torch.device("cuda")
-BATCHSIZE = 128
-CLASSES = 10
-DIR = os.getcwd()
-EPOCHS = 1000
+device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+device
 
 
 # %%
-def tensor_wrap(x, klass=torch.Tensor):
-    return x if 'torch' in str(type(x)) else klass(x)
+series = ETTh1Dataset().load()
 
-def initializeData(rnd):
-    # train-test-split
-    torch.set_printoptions(sci_mode=False)
-    X_train, X_test, y_train, y_test = train_test_split(X_np, Y_logits, test_size = 0.15, random_state = rnd, stratify = Y_logits)
 
-    # train-val split
-    X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size = 0.20, random_state = rnd, stratify = y_train)
+# %%
+class TimeSeriesDataset(Dataset):
+    def __init__(self, data, targets, T, window_stride=1, pred_len=1):
+        self.data = data
+        self.targets = targets
+        assert targets.size(0) == data.size(0)
+        self.T = T # time window
+        self.window_stride = window_stride
+        self.pred_len = pred_len
+        self.N, self.V = data.shape
 
-    # X_pt = Variable(tensor_wrap(X_np)).cuda()
+    def __len__(self):
+        return len(range(0, self.N - self.T - self.pred_len + 1, self.window_stride))
+
+    def __getitem__(self, idx):
+        start = idx * self.window_stride
+        end = start + self.T
+
+        X = self.data[start:end]
+        # if mode == "S": # predict only target
+        y = self.targets[end:end + self.pred_len].flatten()
+        # elif mode == "MS": # predict all variables
+        #   y = self.data[end:end + self.pred_len, :7].flatten()
+        return X, y
+
+
+# %%
+def preprocess_data(series, seq_len, window_stride=1, pred_len=1, batch_size = 512):
+    scaler = StandardScaler()
     
-    # print("y_test information")
-    # print(sum(np.array(y_test)[:, 1]==1))
-    # print([i for i, x in enumerate(np.array(y_test)[:, 1]) if x==1])
+    train, test = series.split_before(0.6)
+    val, test = test.split_before(0.5)
     
-    # initiazing datasets
-    pos_prop = np.mean(np.array(Y_logits)[:, 1])
-
-    p_weight = torch.Tensor([1 / (1 - pos_prop), 1 / pos_prop]).cuda()
-
-    X_train_pt = Variable(tensor_wrap(X_train)).cuda()
-    y_train_pt = Variable(tensor_wrap(y_train, torch.FloatTensor)).cuda()
-
-    X_val_pt = Variable(tensor_wrap(X_val)).cuda()
-    y_val_pt = Variable(tensor_wrap(y_val, torch.FloatTensor)).cuda()
-
-    X_test_pt = Variable(tensor_wrap(X_test)).cuda()
-    y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
-
-    train_dataset = TensorDataset(X_train_pt, y_train_pt)
-    train_loader = DataLoader(train_dataset, batch_size=BATCHSIZE, shuffle=True, num_workers=0)
-
-    val_dataset = TensorDataset(X_val_pt, y_val_pt)
-    val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0)
-
-    test_dataset = TensorDataset(X_test_pt, y_test_pt)
-    test_loader = DataLoader(test_dataset, batch_size=X_test_pt.shape[0], shuffle=True, num_workers=0)
+    print("Train/Val/Test", len(train), len(val), len(test))
     
-    return train_loader, val_loader, X_test, y_test, p_weight
+    train_og = train.pd_dataframe()
+    train = scaler.fit_transform(train_og)
+    train = pd.DataFrame(train, columns=train_og.columns)
+    X_train = train
+    y_train = train[["OT"]]
+    X_train = torch.tensor(X_train.to_numpy(), dtype=torch.float32)
+    y_train = torch.tensor(y_train.to_numpy(), dtype=torch.float32)
+    
+    indicators = torch.isfinite(X_train)
+    X_train = torch.cat([X_train, indicators], axis=1)
+    
+    train_dataset = TimeSeriesDataset(X_train, y_train, seq_len, window_stride, pred_len)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+
+    val_og = val.pd_dataframe()
+    val = scaler.transform(val_og)
+    val = pd.DataFrame(val, columns=val_og.columns)
+    X_val = val
+    y_val = val[["OT"]]
+    X_val = torch.tensor(X_val.to_numpy(), dtype=torch.float32)
+    y_val = torch.tensor(y_val.to_numpy(), dtype=torch.float32)
+    
+    indicators = torch.isfinite(X_val)
+    X_val = torch.cat([X_val, indicators], axis=1)
+    
+    val_dataset = TimeSeriesDataset(X_val, y_val, seq_len, window_stride, pred_len)
+    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+
+    test_og = test.pd_dataframe()
+    test = scaler.transform(test_og)
+    test = pd.DataFrame(test, columns=test_og.columns)
+    X_test = test
+    y_test = test[["OT"]]
+    X_test = torch.tensor(X_test.to_numpy(), dtype=torch.float32)
+    y_test = torch.tensor(y_test.to_numpy(), dtype=torch.float32)
+    
+    indicators = torch.isfinite(X_test)
+    X_test = torch.cat([X_test, indicators], axis=1)
+    
+    test_dataset = TimeSeriesDataset(X_test, y_test, seq_len, window_stride, pred_len)
+    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    
+    return train_loader, val_loader, test_loader, scaler
 
 
 # %%
-
-def init_cutoffs_to_zero(d):
-    return np.zeros(d)
-
-# init the upper and lower thresholds to random values
-def init_rand_upper_thresholds(d):
-    return np.random.rand(d)
-
-def init_rand_lower_thresholds(d):
-    return np.random.rand(d) - 1
-
-def init_zeros(d):
-    return np.zeros(d)
-
-# %%
-def initializeModel(trial, num_concepts = 4):
-#     vals_to_init = init_cutoffs_randomly(changing_dim * 9)
-    logregbottleneck = CBM(input_dim, 
-                                                changing_dim, 
-                                                9,                     
-                                                num_concepts,
-                                                True,
-                                                init_cutoffs_to_zero, 
-                                                init_rand_lower_thresholds, 
-                                                init_rand_upper_thresholds,
-                                                cutoff_times_temperature=0.1,
-                                                cutoff_times_init_values=None,
-                                                opt_lr=trial.suggest_float("lr", 1e-5, 1e-1, log=True),
-                                                opt_weight_decay=trial.suggest_float("wd", 1e-5, 1e-1, log=True),
-                                                l1_lambda=0.001, #trial.suggest_float("l1", 1e-5, 1e-1, log=True),
-                                                cos_sim_lambda=0.01, #trial.suggest_float("cossim", 1e-5, 1e-1, log=True),
-                                                )
-    logregbottleneck.cuda()
-    return logregbottleneck
+random_seed = 1
+set_seed(random_seed)
 
 
 # %%
+seq_len = 336
+pred_len = 96
+n_atomics_list = list(range(2,11,2))
+n_concepts_list = list(range(2,11,2))
+changing_dim = len(series.columns)
+input_dim = 2 * changing_dim
+
+
+# %%
+def initializeModel_with_atomics(n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim, use_summaries_for_atomics, top_k=''):
+    model = models_3d_atomics_on_variate_to_concepts.CBM(input_dim = input_dim, 
+                            changing_dim = changing_dim, 
+                            seq_len = seq_len,
+                            num_concepts = n_concepts,
+                            num_atomics = n_atomics,
+                            use_summaries_for_atomics = use_summaries_for_atomics,
+                            opt_lr = 3e-3, # trial.suggest_float("lr", 1e-5, 1e-1, log=True),
+                            opt_weight_decay = 1e-05, # trial.suggest_float("wd", 1e-5, 1e-1, log=True),
+                            l1_lambda=0.001,
+                            cos_sim_lambda=0.01,
+                            output_dim = output_dim,
+                            top_k=top_k,
+                            task_type=models_3d_atomics_on_variate_to_concepts.TaskType.REGRESSION,
+                            )
+    model = model.to(device)
+    return model
+
+# %%
+activations = ["sigmoid", "relu"]
+
 def objective(trial):
-    # Generate the model.
-    model = initializeModel(trial)
-
-    # Get the FashionMNIST dataset.
-    train_loader, val_loader, X_test, y_test, p_weight  = initializeData(rnd=1)
+    n_atomics = trial.suggest_int("n_atomics", 1, 50)
+    n_concepts = trial.suggest_int("n_concepts", 1, 50)
+    use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [False, True])
     
-    train_loss, val_loss = model.fit(train_loader, val_loader, p_weight,
-         save_model_path = "",
-         epochs=EPOCHS,
-         save_every_n_epochs=100)
+    model = initializeModel_with_atomics(n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim=pred_len, use_summaries_for_atomics=use_summaries_for_atomics)
+    
+    if "sigmoid" == trial.suggest_categorical("atomic_activation_func", ["sigmoid", "relu"]):
+        model.atomic_activation_func = torch.nn.Sigmoid()
+    else:
+        model.atomic_activation_func = torch.nn.ReLU()
+    
+    if "sigmoid" == trial.suggest_categorical("concept_activation_func", ["sigmoid", "relu"]):
+        model.concept_activation_func = torch.nn.Sigmoid()
+    else:
+        model.concept_activation_func = torch.nn.ReLU()
+    
+    # Get the FashionMNIST dataset.
+    train_loader, val_loader, test_loader, scaler = preprocess_data(series, seq_len, pred_len=pred_len)
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=model.optimizer, patience=5)
+    val_loss = model.fit(train_loader, val_loader, None, 
+              save_model_path=None, 
+              max_epochs=10000,
+              scheduler=scheduler,
+              )
+
     return val_loss
 
 
 # %%
-
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=10, n_trials=100, timeout=60 * 60 * 19)
+study.optimize(objective, n_jobs=10, n_trials=None, timeout=60 * 60 * 10)
 
 fig = plot_optimization_history(study)
 fig.write_image("plot_optimization_history.png") 
@@ -144,11 +205,10 @@ print("  Number of finished trials: ", len(study.trials))
 print("  Number of pruned trials: ", len(pruned_trials))
 print("  Number of complete trials: ", len(complete_trials))
 
-print("Best trial:")
-trial = study.best_trial
+# Retrieve top k trials
+k = 20
+print("Top k trials:", k)
+top_trials = sorted(study.trials, key=lambda trial: trial.value)[:k]
 
-print("  Value: ", trial.value)
-
-print("  Params: ")
-for key, value in trial.params.items():
-    print("    {}: {}".format(key, value))
+for i, trial in enumerate(top_trials, 1):
+    print(f"{i}: Value = {trial.value}, Params = {trial.params}")
