@@ -153,25 +153,25 @@ def initializeModel_with_atomics(n_atomics, n_concepts, input_dim, changing_dim,
     model = model.to(device)
     return model
 
-# %%
-activations = ["sigmoid", "relu"]
 
+def get_activation(arg):
+    switch = {
+        'sigmoid': torch.nn.Sigmoid(),
+        'relu': torch.nn.ReLU(),
+    }
+    return switch.get(arg, None)
+
+
+# %%
 def objective(trial):
-    n_atomics = trial.suggest_int("n_atomics", 1, 50)
-    n_concepts = trial.suggest_int("n_concepts", 1, 50)
+    n_atomics = trial.suggest_int("n_atomics", 1, 100)
+    n_concepts = trial.suggest_int("n_concepts", 1, 100)
     use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [False, True])
     
     model = initializeModel_with_atomics(n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim=pred_len, use_summaries_for_atomics=use_summaries_for_atomics)
-    
-    if "sigmoid" == trial.suggest_categorical("atomic_activation_func", ["sigmoid", "relu"]):
-        model.atomic_activation_func = torch.nn.Sigmoid()
-    else:
-        model.atomic_activation_func = torch.nn.ReLU()
-    
-    if "sigmoid" == trial.suggest_categorical("concept_activation_func", ["sigmoid", "relu"]):
-        model.concept_activation_func = torch.nn.Sigmoid()
-    else:
-        model.concept_activation_func = torch.nn.ReLU()
+
+    model.atomic_activation_func = get_activation(trial.suggest_categorical("atomic_activation_func", ["sigmoid", "relu"]))
+    model.concept_activation_func = get_activation(trial.suggest_categorical("concept_activation_func", ["sigmoid", "relu"]))
     
     # Get the FashionMNIST dataset.
     train_loader, val_loader, test_loader, scaler = preprocess_data(series, seq_len, pred_len=pred_len)
@@ -179,23 +179,21 @@ def objective(trial):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=model.optimizer, patience=5)
     val_loss = model.fit(train_loader, val_loader, None, 
               save_model_path=None, 
-              max_epochs=10000,
+              max_epochs=5000,
               scheduler=scheduler,
+              trial=trial,
               )
+    
+    del model, train_loader, val_loader, test_loader, scaler
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return val_loss
 
 
 # %%
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=10, n_trials=None, timeout=60 * 60 * 10)
-
-fig = plot_optimization_history(study)
-fig.write_image("plot_optimization_history.png") 
-fig = plot_param_importances(study)
-fig.write_image("plot_param_importances.png") 
-fig = plot_timeline(study)
-fig.write_image("plot_timeline.png") 
+study.optimize(objective, n_jobs=10, n_trials=100, timeout=60 * 60 * 12)
 
 pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
 complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -206,9 +204,19 @@ print("  Number of pruned trials: ", len(pruned_trials))
 print("  Number of complete trials: ", len(complete_trials))
 
 # Retrieve top k trials
-k = 20
+k = 50
 print("Top k trials:", k)
 top_trials = sorted(study.trials, key=lambda trial: trial.value)[:k]
 
 for i, trial in enumerate(top_trials, 1):
     print(f"{i}: Value = {trial.value}, Params = {trial.params}")
+
+# Plots
+fig = plot_optimization_history(study)
+fig.write_image("plot_optimization_history.png") 
+fig = plot_param_importances(study)
+fig.write_image("plot_param_importances.png") 
+fig = plot_timeline(study)
+fig.write_image("plot_timeline.png") 
+
+# nohup python hyperparameter_optim.py &> hyp.log.out &
