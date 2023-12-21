@@ -24,7 +24,7 @@ RUN pip install h5py tables
 RUN pip install rtpt tqdm
 RUN pip install seaborn squarify imblearn
 RUN pip install optuna plotly kaleido
-RUN pip install aeon torchmetrics darts einops
+RUN pip install aeon torchmetrics darts einops captum
 
 
 #EXPOSE 8090

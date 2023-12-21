@@ -532,6 +532,8 @@ class CBM(nn.Module):
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
                 Xb, yb = Xb.to(self.device), yb.to(self.device)
+                Xb.requires_grad = True
+                yb.requires_grad = True
                 self.zero_grad()
                 y_pred = self.forward(Xb)
 

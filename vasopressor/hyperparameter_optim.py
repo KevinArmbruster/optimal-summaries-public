@@ -11,6 +11,7 @@ import csv
 import datetime
 import os
 import gc
+import time
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
@@ -22,7 +23,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 import optuna
 from optuna.trial import TrialState
-from optuna.visualization import plot_optimization_history, plot_param_importances, plot_timeline
+from optuna.visualization import * #plot_optimization_history, plot_param_importances, plot_timeline
 
 import models
 import models_3d_concepts_on_time
@@ -87,7 +88,7 @@ def preprocess_data(series, seq_len, window_stride=1, pred_len=1, batch_size = 5
     X_train = torch.cat([X_train, indicators], axis=1)
     
     train_dataset = TimeSeriesDataset(X_train, y_train, seq_len, window_stride, pred_len)
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     val_og = val.pd_dataframe()
     val = scaler.transform(val_og)
@@ -101,7 +102,7 @@ def preprocess_data(series, seq_len, window_stride=1, pred_len=1, batch_size = 5
     X_val = torch.cat([X_val, indicators], axis=1)
     
     val_dataset = TimeSeriesDataset(X_val, y_val, seq_len, window_stride, pred_len)
-    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     test_og = test.pd_dataframe()
     test = scaler.transform(test_og)
@@ -115,7 +116,7 @@ def preprocess_data(series, seq_len, window_stride=1, pred_len=1, batch_size = 5
     X_test = torch.cat([X_test, indicators], axis=1)
     
     test_dataset = TimeSeriesDataset(X_test, y_test, seq_len, window_stride, pred_len)
-    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0, pin_memory=True)
     
     return train_loader, val_loader, test_loader, scaler
 
@@ -163,17 +164,17 @@ def get_activation(arg):
 
 
 # %%
-def objective(trial):
-    n_atomics = trial.suggest_int("n_atomics", 1, 100)
-    n_concepts = trial.suggest_int("n_concepts", 1, 100)
-    use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [False, True])
+def objective(trial: TrialState):
+    n_atomics = trial.suggest_int("n_atomics", 1, 600)
+    n_concepts = trial.suggest_int("n_concepts", 1, 600)
+    use_summaries_for_atomics = True
     
     model = initializeModel_with_atomics(n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim=pred_len, use_summaries_for_atomics=use_summaries_for_atomics)
 
-    model.atomic_activation_func = get_activation(trial.suggest_categorical("atomic_activation_func", ["sigmoid", "relu"]))
-    model.concept_activation_func = get_activation(trial.suggest_categorical("concept_activation_func", ["sigmoid", "relu"]))
+    model.atomic_activation_func = get_activation("relu")
+    model.concept_activation_func = get_activation("relu")
     
-    # Get the FashionMNIST dataset.
+
     train_loader, val_loader, test_loader, scaler = preprocess_data(series, seq_len, pred_len=pred_len)
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=model.optimizer, patience=5)
@@ -184,16 +185,30 @@ def objective(trial):
               trial=trial,
               )
     
+    
+    mse_metric = MeanSquaredError().to(device)
+    model.eval()
+    with torch.inference_mode():
+        for batch_idx, (Xb, yb) in enumerate(val_loader):
+            Xb, yb = Xb.to(device), yb.to(device)
+            preds = model.forward(Xb)
+            
+            mse = mse_metric(preds, yb).item()
+        mse = mse_metric.compute().item()
+        mse_metric.reset()
+    
+    
     del model, train_loader, val_loader, test_loader, scaler
     gc.collect()
     torch.cuda.empty_cache()
 
-    return val_loss
+    trial.set_user_attr('val_loss', val_loss)
+    return mse
 
 
 # %%
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=10, n_trials=100, timeout=60 * 60 * 12)
+study.optimize(objective, n_jobs=3, gc_after_trial=True, n_trials=100, timeout=None)#60 * 60 * 12)
 
 pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
 complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -204,12 +219,14 @@ print("  Number of pruned trials: ", len(pruned_trials))
 print("  Number of complete trials: ", len(complete_trials))
 
 # Retrieve top k trials
-k = 50
-print("Top k trials:", k)
-top_trials = sorted(study.trials, key=lambda trial: trial.value)[:k]
+# k = 200
+# print("Top k trials:", k)
+top_trials = sorted(study.trials, key=lambda trial: trial.value)
 
 for i, trial in enumerate(top_trials, 1):
-    print(f"{i}: Value = {trial.value}, Params = {trial.params}")
+    print(f"{i}: Criteria = {trial.value}, User Attrs = {trial.user_attrs}, Params = {trial.params}")
+
+time.sleep(10) # wait for printing
 
 # Plots
 fig = plot_optimization_history(study)
@@ -218,5 +235,13 @@ fig = plot_param_importances(study)
 fig.write_image("plot_param_importances.png") 
 fig = plot_timeline(study)
 fig.write_image("plot_timeline.png") 
+fig = plot_intermediate_values(study)
+fig.write_image("plot_intermediate_values.png") 
+fig = plot_parallel_coordinate(study, params=["n_atomics", "n_concepts"])
+fig.write_image("plot_parallel_coordinate.png") 
+fig = plot_contour(study)
+fig.write_image("plot_contour.png") 
+fig = plot_param_importances(study, target=lambda t: t.duration.total_seconds(), target_name="duration")
+fig.write_image("plot_param_importances_duration.png") 
 
 # nohup python hyperparameter_optim.py &> hyp.log.out &
