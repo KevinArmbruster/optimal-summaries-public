@@ -7,7 +7,9 @@ RUN apt-get clean && \
     apt-get install -y apt-transport-https && \
     apt-get install -y git && \
     apt-get install -y curl && \
-    apt-get install -y wget
+    apt-get install -y wget && \
+    apt-get install -y graphviz && \
+    apt-get install -y xdg-utils
 
 
 WORKDIR /workdir
@@ -24,7 +26,7 @@ RUN pip install h5py tables
 RUN pip install rtpt tqdm
 RUN pip install seaborn squarify imblearn
 RUN pip install optuna plotly kaleido
-RUN pip install aeon torchmetrics darts einops captum
+RUN pip install aeon torchmetrics darts einops captum graphviz
 
 
 #EXPOSE 8090

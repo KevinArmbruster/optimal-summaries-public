@@ -7,3 +7,5 @@
 /data/
 /vasopressor/models
 *.png
+*.dot
+*.svg

@@ -31,6 +31,11 @@ import time
 from enum import Enum
 from einops import rearrange
 
+import debug_grad_graph
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+
 class TaskType(Enum):
     CLASSIFICATION = 0
     REGRESSION = 1
@@ -1072,7 +1077,7 @@ class CBM(nn.Module):
         return self.linear(activation)
     
     def forward_probabilities(self, patient_batch):
-        output = self.forward(patient_batch)
+        output = self(patient_batch)
         return self.output_af(output)
     
     def predict(self, patient_batch):
@@ -1129,7 +1134,7 @@ class CBM(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=20, patience=10, warmup_epochs=0, scheduler=None, trial=None):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=20, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
         """
         
         Args:
@@ -1158,13 +1163,31 @@ class CBM(nn.Module):
             train_loss = 0
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
-                Xb, yb = Xb.to(self.device), yb.to(self.device)
-                self.zero_grad()
-                y_pred = self.forward(Xb)
+                Xb, yb = Variable(Xb.to(self.device)), Variable(yb.to(self.device))
+                self.optimizer.zero_grad()
+                y_pred = self(Xb)
 
                 loss = self.compute_loss(yb, y_pred, p_weight)
 
+                
+                if show_grad:
+                    get_dot = debug_grad_graph.register_hooks(loss)
+                
                 loss.backward()
+                
+                if show_grad:
+                    dot = get_dot()
+                    path = 'aDebugGraph.dot'
+                    dot.save(path)
+
+                    plot_grad_flow(self.named_parameters())
+                    
+                    for name, param in self.named_parameters():
+                        if param.grad is not None:
+                            print(f"Parameter: {name}, Gradient: {param.grad}")
+                    
+                    return
+                
 
                 train_loss += loss * Xb.size(0)
                 
@@ -1188,8 +1211,7 @@ class CBM(nn.Module):
                         Xb, yb = Xb.to(self.device), yb.to(self.device)
             
                         # Forward pass.
-                        self.zero_grad()
-                        y_pred = self.forward(Xb)
+                        y_pred = self(Xb)
 
                         val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
                     
@@ -1250,3 +1272,32 @@ class CBM(nn.Module):
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
         return task_loss + l1_loss + cos_sim_loss
+
+def plot_grad_flow(named_parameters):
+    '''Plots the gradients flowing through different layers in the net during training.
+    Can be used for checking for possible gradient vanishing / exploding problems.
+    
+    Usage: Plug this function in Trainer class after loss.backwards() as 
+    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    ave_grads = []
+    max_grads= []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad): #and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean().cpu())
+            max_grads.append(p.grad.abs().max().cpu())
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
+    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(right=len(ave_grads)) # left=0, 
+    # plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+    plt.yscale("log")
+    plt.xlabel("Layers")
+    plt.ylabel("Gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+    plt.legend([Line2D([0], [0], color="c", lw=4),
+                Line2D([0], [0], color="b", lw=4)], ['max-gradient', 'mean-gradient'])
+    plt.show()
