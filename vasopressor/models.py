@@ -368,7 +368,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         num_total_c_weights = changing_dim * num_cutoff_times
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights).to(self.device)
+        self.cutoff_percentage = - 12 * torch.ones(1, num_total_c_weights).to(self.device)
       
             
         if differentiate_cutoffs: 
@@ -377,7 +377,7 @@ class LogisticRegressionWithSummaries(nn.Module):
             if cutoff_times_init_values is not None:
                 cutoff_vals = cutoff_times_init_values
                 
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).to(self.device))
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).to(self.device))
             
         self.times = torch.tensor(np.transpose(np.tile(range(seq_len), (changing_dim, 1)))).to(self.device)
         self.times = self.times.repeat(1, num_cutoff_times).to(self.device)
@@ -394,7 +394,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         self.upper_thresholds.retain_grad()
         
         self.thresh_temperature = thresholds_temperature
-        self.cutoff_times_temperature = cutoff_times_temperature
+        self.cutoff_percentage_temperature = cutoff_times_temperature
         self.ever_measured_temperature = ever_measured_temperature
         self.switch_temperature = switch_temperature
         
@@ -412,17 +412,17 @@ class LogisticRegressionWithSummaries(nn.Module):
                 condition[:,top_k_inds[i]]=True
             self.linear.weight = torch.nn.Parameter(self.linear.weight.where(condition, torch.tensor(0.0).to(self.device)))
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
+    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         # batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
@@ -590,7 +590,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         
         return cat
     
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         # Encodes the patient_batch, then computes the forward.
         return self.linear(self.encode_patient_batch(patient_batch, epsilon_denom))
     
@@ -860,11 +860,11 @@ class CBM(nn.Module):
         
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = -torch.ones(1, self.cs_parser.num_weights, device=self.device)
+        self.cutoff_percentage = -torch.ones(1, self.cs_parser.num_weights, device=self.device)
         
         if self.differentiate_cutoffs:
             cutoff_vals = self.init_cutoffs_f(self.cs_parser.num_weights)
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
 
         self.times = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.cs_parser.num_weights, 1))), device=self.device)
         
@@ -873,7 +873,7 @@ class CBM(nn.Module):
         self.upper_thresholds = nn.Parameter(torch.tensor(self.init_upper_thresholds_f(self.changing_dim), requires_grad=True, device=self.device))
         
         self.thresh_temperature = self.temperature
-        self.cutoff_times_temperature = self.temperature
+        self.cutoff_percentage_temperature = self.temperature
         self.ever_measured_temperature = self.temperature
         
         
@@ -909,17 +909,17 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
+    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
         # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
         
-        weight_vector = self.sigmoid((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         
         # MEAN FEATURES
         # Calculate \sum_t (w_t * x_t * m_t)
@@ -1069,7 +1069,7 @@ class CBM(nn.Module):
 
         return cat
     
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         # Encodes the patient_batch, then computes the forward.
         encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
         bottleneck = self.bottleneck(encoded)
@@ -1163,38 +1163,30 @@ class CBM(nn.Module):
             train_loss = 0
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
-                Xb, yb = Variable(Xb.to(self.device)), Variable(yb.to(self.device))
-                self.optimizer.zero_grad()
+                Xb, yb = Xb.to(self.device), yb.to(self.device)
                 y_pred = self(Xb)
 
                 loss = self.compute_loss(yb, y_pred, p_weight)
 
-                
-                if show_grad:
-                    get_dot = debug_grad_graph.register_hooks(loss)
-                
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                train_loss += loss * Xb.size(0)
+                
+                
+                for name, param in self.named_parameters():
+                    isnan = param.grad is None or torch.isnan(param.grad).any()
+                    if isnan:
+                        print(f"Parameter: {name}, Gradient NAN? {isnan}")
+                        return
                 
                 if show_grad:
-                    dot = get_dot()
-                    path = 'aDebugGraph.dot'
-                    dot.save(path)
-
                     plot_grad_flow(self.named_parameters())
-                    
-                    for name, param in self.named_parameters():
-                        if param.grad is not None:
-                            print(f"Parameter: {name}, Gradient: {param.grad}")
-                    
                     return
                 
-
-                train_loss += loss * Xb.size(0)
                 
                 if (self.top_k != ''):
                     self.bottleneck.weight.grad.fill_(0.)
         
-                # update all parameters
                 self.optimizer.step()
             
             train_loss = train_loss / len(train_loader.sampler)
@@ -1283,6 +1275,7 @@ def plot_grad_flow(named_parameters):
     max_grads= []
     layers = []
     for n, p in named_parameters:
+        print(n, torch.isnan(p.grad).any())
         if(p.requires_grad): #and ("bias" not in n):
             layers.append(n)
             ave_grads.append(p.grad.abs().mean().cpu())

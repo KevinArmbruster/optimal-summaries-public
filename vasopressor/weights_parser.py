@@ -20,4 +20,4 @@ class WeightsParser(object):
     
     def get_cs(self, model, name):
         start_i, end_i = self.idxs_and_shapes[name]
-        return model.cutoff_times[0, start_i:end_i]
+        return model.cutoff_percentage[0, start_i:end_i]

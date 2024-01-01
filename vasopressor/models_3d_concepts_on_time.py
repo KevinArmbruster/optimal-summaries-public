@@ -160,11 +160,11 @@ class CBM(nn.Module):
         
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = -torch.ones(1, self.cs_parser.num_weights, device=self.device)
+        self.cutoff_percentage = -torch.ones(1, self.cs_parser.num_weights, device=self.device)
         
         if self.differentiate_cutoffs:
             cutoff_vals = self.init_cutoffs_f(self.cs_parser.num_weights)
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
 
         self.times = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.cs_parser.num_weights, 1))), device=self.device)
         
@@ -173,7 +173,7 @@ class CBM(nn.Module):
         self.upper_thresholds = nn.Parameter(torch.tensor(self.init_upper_thresholds_f(self.changing_dim), requires_grad=True, device=self.device))
         
         self.thresh_temperature = self.temperature
-        self.cutoff_times_temperature = self.temperature
+        self.cutoff_percentage_temperature = self.temperature
         self.ever_measured_temperature = self.temperature
         
         
@@ -224,17 +224,17 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
+    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
         # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
         
-        weight_vector = self.sigmoid((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         
         # MEAN FEATURES
         # Calculate \sum_t (w_t * x_t * m_t)
@@ -395,7 +395,7 @@ class CBM(nn.Module):
 
         return cat
     
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
         # rearranged = rearrange(encoded, "b t v -> b v t")
         bottleneck = self.bottleneck(encoded)

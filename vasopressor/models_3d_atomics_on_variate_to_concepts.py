@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 from custom_losses import LSTM_compound_loss, custom_bce_horseshoe
-from param_initializations import set_seed, init_cutoffs_to_zero, init_rand_lower_thresholds, init_rand_upper_thresholds
+from param_initializations import set_seed, init_cutoffs_to_small, init_cutoffs_to_50perc, init_rand_lower_thresholds, init_rand_upper_thresholds
 from torchmetrics import AUROC, Accuracy, MeanSquaredError
 
 from sklearn.metrics import roc_auc_score
@@ -84,7 +84,7 @@ class CBM(nn.Module):
                  use_summaries_for_atomics,
                  num_concepts,
                  differentiate_cutoffs = True,
-                 init_cutoffs_f = init_cutoffs_to_zero,
+                 init_cutoffs_f = init_cutoffs_to_50perc,
                  init_lower_thresholds_f = init_rand_lower_thresholds, 
                  init_upper_thresholds_f = init_rand_upper_thresholds,
                  temperature = 0.1,
@@ -167,12 +167,13 @@ class CBM(nn.Module):
         
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = -torch.ones(1, self.cs_parser.num_weights, device=self.device)
+        self.cutoff_percentage = torch.zeros(1, self.cs_parser.num_weights, device=self.device)
         
         if self.differentiate_cutoffs:
             cutoff_vals = self.init_cutoffs_f(self.cs_parser.num_weights)
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
 
+        # times is tensor of size (seq_len x num_weights)
         self.times = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.cs_parser.num_weights, 1))), device=self.device)
         
         
@@ -180,7 +181,7 @@ class CBM(nn.Module):
         self.upper_thresholds = nn.Parameter(torch.tensor(self.init_upper_thresholds_f(self.changing_dim), requires_grad=True, device=self.device))
         
         self.thresh_temperature = self.temperature
-        self.cutoff_times_temperature = self.temperature
+        self.cutoff_percentage_temperature = self.temperature
         self.ever_measured_temperature = self.temperature
         
         self.atomic_activation_func = nn.Sigmoid()
@@ -234,66 +235,86 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def calculate_summaries(self, patient_batch, epsilon_denom=0.01):
+    def calculate_summaries(self, patient_batch, epsilon_denom=1e-8):
         # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature), device=self.device)
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature), device=self.device)
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
-        batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
+        batch_measurement_ind = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
         
-        weight_vector = self.sigmoid_layer((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        cutoff = ((self.seq_len+1) * torch.clip(self.cutoff_percentage, 0, 1)) - 1 # range [-1, seq_len], enables flexibility to use full or no time series values, without big bias
+        weight_vector = self.sigmoid_layer((self.times - cutoff) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        
         
         # MEAN FEATURES
         # Calculate \sum_t (w_t * x_t * m_t)
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_mean_']
         mean_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        weighted_average = torch.sum(mean_weight_vector * (batch_changing_vars * batch_measurement_indicators), dim=1)
+        weighted_average = torch.sum(mean_weight_vector * (batch_changing_vars * batch_measurement_ind), dim=1)
 
-        mean_feats = (weighted_average / (torch.sum(mean_weight_vector, dim=1) + epsilon_denom))
+        mean_feats = weighted_average / (torch.sum(mean_weight_vector, dim=1) + epsilon_denom)
+        # TODO denom forgot batch_measurement_ind
+        # mean_feats = weighted_average / (torch.sum(mean_weight_vector * batch_measurement_ind, dim=1) + epsilon_denom)
+        
         
         # VARIANCE FEATURES
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_var_']
         var_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        x_mean = torch.mean(batch_measurement_indicators * batch_changing_vars, dim=1, keepdim=True)
-        weighted_variance = torch.sum(batch_measurement_indicators * var_weight_vector * (batch_changing_vars - x_mean)**2, dim=1)        
-        normalizing_term = torch.sum(batch_measurement_indicators * var_weight_vector, dim=1)**2 / (torch.sum(batch_measurement_indicators * var_weight_vector, dim=1)**2 + torch.sum(batch_measurement_indicators * var_weight_vector ** 2, dim=1) + epsilon_denom)
-        
-        var_feats = weighted_variance / (normalizing_term + epsilon_denom)
-        
+        x_mean = torch.mean(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True)
+        # TODO x bar is not normal mean, but divide by sum of M
+        # x_mean = torch.sum(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True) / torch.sum(batch_measurement_ind, dim=1, keepdim=True)
 
+        weighted_variance = torch.sum(batch_measurement_ind * var_weight_vector * (batch_changing_vars - x_mean)**2, dim=1)
+        
+        squared_sum_of_weights = torch.sum(batch_measurement_ind * var_weight_vector, dim=1)**2
+        sum_of_squared_weights = torch.sum(batch_measurement_ind * var_weight_vector ** 2, dim=1)
+        
+        normalizing_term = squared_sum_of_weights / (squared_sum_of_weights + sum_of_squared_weights + epsilon_denom)
+        var_feats = weighted_variance / (normalizing_term + epsilon_denom)
+        # TODO should be * not /
+        # var_feats = normalizing_term * weighted_variance
+        
+    	
         # INDICATOR FOR EVER BEING MEASURED
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_ever_measured_']
         ever_measured_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        ever_measured_feats = self.sigmoid_layer( torch.sum(ever_measured_weight_vector * batch_measurement_indicators, dim=1) / (self.ever_measured_temperature * torch.sum(ever_measured_weight_vector, dim=1) + epsilon_denom)) - 0.5
+        weighted_ind_average = torch.sum(ever_measured_weight_vector * batch_measurement_ind, dim=1)
+        pre_sigmoid = weighted_ind_average / (self.ever_measured_temperature * torch.sum(ever_measured_weight_vector, dim=1) + epsilon_denom)
+        ever_measured_feats = self.sigmoid_layer(pre_sigmoid) - 0.5
         
         
         # MEAN OF INDICATOR SEQUENCE
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_mean_indicators_']
         mean_ind_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        weighted_ind_average = torch.sum(mean_ind_weight_vector * batch_measurement_indicators, dim=1)
+        weighted_ind_average = torch.sum(mean_ind_weight_vector * batch_measurement_ind, dim=1)
         mean_ind_feats = weighted_ind_average / (torch.sum(mean_ind_weight_vector, dim=1) + epsilon_denom)
+        
         
         # VARIANCE OF INDICATOR SEQUENCE
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_var_indicators_']
         var_ind_weight_vector = weight_vector[:, :, start_i : end_i]
                 
-        x_mean_ind = torch.mean(batch_measurement_indicators, dim=1, keepdim=True)
-        weighted_variance_ind = torch.sum(var_ind_weight_vector * (batch_measurement_indicators - x_mean_ind)**2, dim=1)        
-        normalizing_term = torch.sum(var_ind_weight_vector, dim=1)**2 / (torch.sum(var_ind_weight_vector, dim=1)**2 + torch.sum(var_ind_weight_vector ** 2, dim=1) + epsilon_denom)
+        x_mean_ind = torch.mean(batch_measurement_ind, dim=1, keepdim=True)
+        weighted_variance_ind = torch.sum(var_ind_weight_vector * (batch_measurement_ind - x_mean_ind)**2, dim=1)     
+           
+        squared_sum_of_weights = torch.sum(var_ind_weight_vector, dim=1)**2
+        sum_of_squared_weights = torch.sum(var_ind_weight_vector ** 2, dim=1)
+        normalizing_term = squared_sum_of_weights / (squared_sum_of_weights + sum_of_squared_weights + epsilon_denom)
         
         var_ind_feats = weighted_variance_ind / (normalizing_term + epsilon_denom)
+        # TODO should be * not /
+        # var_ind_feats = normalizing_term * weighted_variance_ind
         
         
         # COUNT OF SWITCHES
         # Compute the number of times the indicators switch from missing to measured, or vice-versa.
-        
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_switches_']
         switches_weight_vector = weight_vector[:, :, start_i : end_i][:, :-1, :]
         
@@ -304,6 +325,7 @@ class CBM(nn.Module):
         
         switch_feats = torch.sum(switches_weight_vector * torch.abs(later_times - earlier_times), dim=1) / (torch.sum(switches_weight_vector, dim=1) + epsilon_denom)
         
+        
         # FIRST TIME MEASURED
         # LAST TIME MEASURED
         
@@ -313,21 +335,21 @@ class CBM(nn.Module):
         # For each feature, calculate the first time it was measured
         # Index of the second dimension of the indicators
 
-        mask_max_values, mask_max_indices = torch.max(batch_measurement_indicators, dim=1)
+        mask_max_values, mask_max_indices = torch.max(batch_measurement_ind, dim=1)
         # if the max-mask is zero, there is no nonzero value in the row
         mask_max_indices[mask_max_values == 0] = -1
         
-        first_time_feats = mask_max_indices / float(batch_measurement_indicators.shape[1])
+        first_time_feats = mask_max_indices / float(batch_measurement_ind.shape[1])
         
         # Last time measured is the last index of the max.
         # https://discuss.pytorch.org/t/how-to-reverse-a-torch-tensor/382
-        flipped_batch_measurement_indicators = torch.flip(batch_measurement_indicators, [1])
+        flipped_batch_measurement_indicators = torch.flip(batch_measurement_ind, [1])
         
         mask_max_values, mask_max_indices = torch.max(flipped_batch_measurement_indicators, dim=1)
         # if the max-mask is zero, there is no nonzero value in the row
-        mask_max_indices[mask_max_values == 0] = batch_measurement_indicators.shape[1]
+        mask_max_indices[mask_max_values == 0] = batch_measurement_ind.shape[1]
         
-        last_time_feats = (float(batch_measurement_indicators.shape[1]) - mask_max_indices) / float(batch_measurement_indicators.shape[1])
+        last_time_feats = (float(batch_measurement_ind.shape[1]) - mask_max_indices) / float(batch_measurement_ind.shape[1])
         
         # SLOPE OF L2
         # STANDARD ERROR OF L2     
@@ -336,12 +358,12 @@ class CBM(nn.Module):
         slope_weight_vector = weight_vector[:, :, start_i : end_i]
         
         # Zero out the batch_changing_vars so that they are zero if the features are not measured.
-        linreg_y = batch_changing_vars * batch_measurement_indicators
+        linreg_y = batch_changing_vars * batch_measurement_ind
         
         # The x-values for this linear regression are the times.
         # Zero them out so that they are zero if the features are not measured.
         linreg_x = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.changing_dim, 1))), device=self.device)
-        linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_indicators
+        linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_ind
         
         # Now, compute the slope and standard error.
         weighted_x = torch.unsqueeze(torch.sum(slope_weight_vector * linreg_x, dim = 1) / (torch.sum(slope_weight_vector, dim = 1) + epsilon_denom), 1)
@@ -357,52 +379,44 @@ class CBM(nn.Module):
         slope_stderr_feats = 1 / (var_denom + epsilon_denom)
         
         slope_stderr_feats = torch.where(var_denom > 0, slope_stderr_feats, var_denom)
+        # TODO slope_weight_vector could be negative, just check for 0
+        # slope_stderr_feats = torch.where(var_denom == 0, slope_stderr_feats, var_denom)
+        
         
         # HOURS ABOVE THRESHOLD
         # HOURS BELOW THRESHOLD
-        
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_hours_above_threshold_']
         above_thresh_weight_vector = weight_vector[:, :, start_i : end_i]
         
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_hours_below_threshold_']
         below_thresh_weight_vector = weight_vector[:, :, start_i : end_i]
-            
-        upper_features = self.sigmoid_layer((batch_changing_vars - self.upper_thresholds)/self.thresh_temperature)
-        lower_features = self.sigmoid_layer((self.lower_thresholds - batch_changing_vars)/self.thresh_temperature)
-                
-        # (batch, timestep, features)
+        
+        upper_features = self.sigmoid_layer((batch_changing_vars - self.upper_thresholds) / self.thresh_temperature)
+        lower_features = self.sigmoid_layer((self.lower_thresholds - batch_changing_vars) / self.thresh_temperature)
+        
         # sum upper_features and lower_features across timesteps
-        above_threshold_feats = torch.sum(batch_measurement_indicators * above_thresh_weight_vector * upper_features, dim=1) / (torch.sum(batch_measurement_indicators * above_thresh_weight_vector, dim=1) + epsilon_denom)
-        below_threshold_feats = torch.sum(batch_measurement_indicators * below_thresh_weight_vector * lower_features, dim=1) / (torch.sum(batch_measurement_indicators * below_thresh_weight_vector, dim=1) + epsilon_denom)
+        above_tmp = batch_measurement_ind * above_thresh_weight_vector
+        above_threshold_feats = torch.sum(above_tmp * upper_features, dim=1) / (torch.sum(above_tmp, dim=1) + epsilon_denom)
         
-        # feats_time_23 = patient_batch[:, 23, :]     
-        # time_feats = patient_batch[:, self.seq_len-1, :] # use last timestamp
+        below_tmp = batch_measurement_ind * below_thresh_weight_vector
+        below_threshold_feats = torch.sum(below_tmp * lower_features, dim=1) / (torch.sum(below_tmp, dim=1) + epsilon_denom)
         
-        # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
-        # changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
-        # indicators_2d = batch_measurement_indicators.reshape(batch_measurement_indicators.shape[0], -1)
-        # time_feats = torch.cat((changing_vars_2d, indicators_2d, batch_static_vars), dim=1)
         
-        # print("patient_batch", patient_batch.shape)
-        # print("time_feats", time_feats.shape)
-
-        summaries = [mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), 
-                         switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), 
-                         above_threshold_feats.float(), below_threshold_feats.float()]
+        # return summaries
+        summaries = [mean_feats.float(), var_feats.float(), 
+                     ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), 
+                     slope_feats.float(), slope_stderr_feats.float(), 
+                     first_time_feats.float(), last_time_feats.float(), 
+                     above_threshold_feats.float(), below_threshold_feats.float()]
         # print("summaries", len(summaries))
-        
-        # time_dim_index = 1
-        # summaries = [tensor.unsqueeze(time_dim_index).expand(-1, self.seq_len, -1) for tensor in summaries]
-        
-        # cat = torch.cat([patient_batch] + summaries, axis=-1)
         
         # print("mean_feats", summaries[0].shape) # torch.Size([512, 7])
         # print("var_feats", summaries[1].shape) # torch.Size([512, 7])
         # print("cat", cat.shape)
 
-        return batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries
+        return batch_changing_vars, batch_measurement_ind, batch_static_vars, summaries
     
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         
         batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries = self.calculate_summaries(patient_batch, epsilon_denom)
         
@@ -505,7 +519,7 @@ class CBM(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=20, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
         """
         
         Args:
@@ -529,88 +543,88 @@ class CBM(nn.Module):
         if early_stopped:
             return
         
-        for epoch in tqdm(range(self.curr_epoch+1, max_epochs)):
-            self.train()
-            train_loss = 0
-            
-            for batch_idx, (Xb, yb) in enumerate(train_loader):
-                Xb, yb = Xb.to(self.device), yb.to(self.device)
-                self.optimizer.zero_grad()
-                y_pred = self(Xb)
-
-                loss = self.compute_loss(yb, y_pred, p_weight)
-
-                if show_grad:
-                    get_dot = debug_grad_graph.register_hooks(loss)
-                
-                loss.backward()
-                
-                if show_grad:
-                    dot = get_dot()
-                    path = 'aDebugGraph.dot'
-                    dot.save(path)
-
-                    plot_grad_flow(self.named_parameters())
-                    
-                    for name, param in self.named_parameters():
-                        if param.grad is not None:
-                            print(f"Parameter: {name}, Gradient: {param.grad}")
-                    
-                    return
-                
-                train_loss += loss * Xb.size(0)
-                
-                if (self.top_k != ''):
-                    self.bottleneck.weight.grad.fill_(0.)
+        epochs = range(self.curr_epoch+1, max_epochs)
         
-                # update all parameters
-                self.optimizer.step()
+        with tqdm(total=len(epochs), unit=' epoch') as pbar:
             
-            train_loss = train_loss / len(train_loader.sampler)
+            for epoch in epochs:
+                self.train()
+                train_loss = 0
             
-            if (epoch % save_every_n_epochs) == (-1 % save_every_n_epochs):
-                self.eval()
-                with torch.no_grad():
-                    
-                    self.train_losses.append(train_loss.item())
-                    
-                    # Calculate validation set loss
-                    val_loss = 0
-                    for batch_idx, (Xb, yb) in enumerate(val_loader):
-                        Xb, yb = Xb.to(self.device), yb.to(self.device)
-            
-                        # Forward pass.
-                        y_pred = self(Xb)
+                ### Train loop
+                for Xb, yb in train_loader:
+                    Xb, yb = Xb.to(self.device), yb.to(self.device)
+                    y_pred = self(Xb)
 
-                        val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
+                    loss = self.compute_loss(yb, y_pred, p_weight)
                     
-                    val_loss = val_loss / len(val_loader.sampler)
-                    self.val_losses.append(val_loss.item())
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    train_loss += loss * Xb.size(0)
                     
-                    if scheduler:
-                        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                            scheduler.step(val_loss)
-                        else:
-                            scheduler.step()
                     
-                    state = create_state_dict(self, epoch)
-                    
-                    if self.earlyStopping.check_improvement(val_loss, state):
-                        break
-                    
-                    if save_model_path:
-                        torch.save(state, save_model_path)
-                    
-                    if trial:
-                        trial.report(val_loss, epoch)
-                        
-                        if trial.should_prune():
-                            raise optuna.exceptions.TrialPruned()
+                    if (self.top_k != ''):
+                        self.bottleneck.weight.grad.fill_(0.)
             
-            rtpt.step(subtitle=f"loss={train_loss:2.2f}")
+                    self.optimizer.step()
+                    
+                    if show_grad:
+                        plot_grad_flow(self.named_parameters())
+                
+                train_loss = train_loss / len(train_loader.sampler)
+                
+                
+                if (epoch % save_every_n_epochs) == 0:
+                    self.eval()
+                    with torch.no_grad():
+                        
+                        self.train_losses.append(train_loss.item())
+                        
+                        ### Validation loop
+                        val_loss = 0
+                        for Xb, yb in val_loader:
+                            Xb, yb = Xb.to(self.device), yb.to(self.device)
+                
+                            # Forward pass.
+                            y_pred = self(Xb)
+
+                            val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
+                        
+                        val_loss = val_loss / len(val_loader.sampler)
+                        self.val_losses.append(val_loss.item())
+                        
+                        
+                        ### Auxilliary stuff
+                        state = create_state_dict(self, epoch)
+                        
+                        if self.earlyStopping.check_improvement(val_loss, state):
+                            break
+                        
+                        if scheduler:
+                            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                                scheduler.step(val_loss)
+                            else:
+                                scheduler.step()
+                        
+                        if save_model_path:
+                            torch.save(state, save_model_path)
+                        
+                        if trial:
+                            trial.report(val_loss, epoch)
+                            
+                            if trial.should_prune():
+                                raise optuna.exceptions.TrialPruned()
+                
+                pbar.set_postfix({'Train Loss': f'{train_loss.item():.5f}', 'Val Loss': f'{self.val_losses[-1]:.5f}', "Best Val Loss": f'{self.earlyStopping.min_max_criterion:.5f}'})
+                pbar.update()
+                rtpt.step(subtitle=f"loss={train_loss:2.2f}")
             
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)
+        
+        print("cutoff_percentage after", self.cutoff_percentage.round(decimals=3))
+        print("lower_thresholds after", self.lower_thresholds.round(decimals=3))
+        print("upper_thresholds after", self.upper_thresholds.round(decimals=3))
         
         return self.val_losses[-1]
 
@@ -661,8 +675,8 @@ def plot_grad_flow(named_parameters):
     plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
     plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
     plt.xlim(right=len(ave_grads)) # left=0, 
-    plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-    # plt.yscale("log")
+    # plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+    plt.yscale("log")
     plt.xlabel("Layers")
     plt.ylabel("Gradient")
     plt.title("Gradient flow")

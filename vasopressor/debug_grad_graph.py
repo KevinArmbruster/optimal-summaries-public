@@ -55,9 +55,9 @@ def register_hooks(var):
                 if any(is_bad_grad(gi) for gi in fn_dict[fn]):
                     fillcolor = 'red'
                 
-                sizes = [gi.size() if gi != None else "None" for gi in fn_dict[fn]]
+                sizes = [str(gi.shape) + f" ({gi.numel()})" if gi != None else "None" for gi in fn_dict[fn]]
                 
-                node_name = str(type(fn).__name__) + "\n " + str(sizes)
+                node_name = str(type(fn).__name__) + "\n " + ", ".join(sizes)
                 dot.node(str(id(fn)), node_name, fillcolor=fillcolor)
             for next_fn, _ in fn.next_functions:
                 if next_fn is not None:

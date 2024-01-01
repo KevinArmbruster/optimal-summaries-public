@@ -341,7 +341,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         num_total_c_weights = changing_dim * num_cutoff_times
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights).cuda()
+        self.cutoff_percentage = - 12 * torch.ones(1, num_total_c_weights).cuda()
       
             
         if differentiate_cutoffs: 
@@ -350,7 +350,7 @@ class LogisticRegressionWithSummaries(nn.Module):
             if cutoff_times_init_values is not None:
                 cutoff_vals = cutoff_times_init_values
                 
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
             
         self.times = torch.tensor(np.transpose(np.tile(range(seq_len), (changing_dim, 1)))).cuda()
         self.times = self.times.repeat(1, num_cutoff_times).cuda()
@@ -367,7 +367,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         self.upper_thresholds.retain_grad()
         
         self.thresh_temperature = thresholds_temperature
-        self.cutoff_times_temperature = cutoff_times_temperature
+        self.cutoff_percentage_temperature = cutoff_times_temperature
         self.ever_measured_temperature = ever_measured_temperature
         self.switch_temperature = switch_temperature
         
@@ -385,17 +385,17 @@ class LogisticRegressionWithSummaries(nn.Module):
                 condition[:,top_k_inds[i]]=True
             self.linear.weight = torch.nn.Parameter(self.linear.weight.where(condition, torch.tensor(0.0).cuda()))
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
+    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature)).cuda()
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature)).cuda()
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
@@ -563,7 +563,7 @@ class LogisticRegressionWithSummaries(nn.Module):
         
         return cat
     
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         # Encodes the patient_batch, then computes the forward.
         return self.linear(self.encode_patient_batch(patient_batch, epsilon_denom))
     
@@ -636,7 +636,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         num_total_c_weights = changing_dim * num_cutoff_times
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_times = - 12 * torch.ones(1, num_total_c_weights).cuda()
+        self.cutoff_percentage = - 12 * torch.ones(1, num_total_c_weights).cuda()
                   
         if differentiate_cutoffs: 
             cutoff_vals = init_cutoffs(num_total_c_weights)
@@ -644,7 +644,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
             if cutoff_times_init_values is not None:
                 cutoff_vals = cutoff_times_init_values
                 
-            self.cutoff_times = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True).reshape(1, num_total_c_weights).cuda())
             
         self.times = torch.tensor(np.transpose(np.tile(range(seq_len), (changing_dim, 1)))).cuda()
         self.times = self.times.repeat(1, num_cutoff_times).cuda()
@@ -661,7 +661,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         self.upper_thresholds.retain_grad()
         
         self.thresh_temperature = thresholds_temperature
-        self.cutoff_times_temperature = cutoff_times_temperature
+        self.cutoff_percentage_temperature = cutoff_times_temperature
         self.ever_measured_temperature = ever_measured_temperature
         self.switch_temperature = switch_temperature
         
@@ -697,17 +697,17 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
                 condition[top_k_concepts[i]][top_k_inds[i]]=True
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0).cuda()))
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=0.01):
+    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
 	# Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
         # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_times_temperature)).cuda()
+        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature)).cuda()
         
         # Get changing variables
         batch_changing_vars = patient_batch[:, :, :self.changing_dim]
         batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
         batch_measurement_repeat = batch_measurement_indicators.repeat(1, 1, self.num_cutoff_times)
         
-        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_times) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
+        weight_vector = self.sigmoid_for_weights((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
         # Calculate weighted mean features
         
         # Sum of all weights across time-steps
@@ -877,7 +877,7 @@ class LogisticRegressionWithSummariesAndBottleneck(nn.Module):
         # print(cat.size())
         return cat
                 
-    def forward(self, patient_batch, epsilon_denom=0.01):
+    def forward(self, patient_batch, epsilon_denom=1e-8):
         # get concept definitions
         self.bottleneck.weight = torch.nn.Parameter(torch.tensor(np.genfromtxt('./models/LOS-6-600/completeness/r1_c{}.out'.format(self.num_concepts), delimiter=',')))
         # calculate innerproduct of data and concept
