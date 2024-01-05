@@ -1,6 +1,4 @@
 # %%
-%load_ext autoreload
-%autoreload 2
 
 from darts.datasets import ETTh1Dataset
 # from darts.models import NLinearModel
@@ -36,7 +34,8 @@ from param_initializations import *
 # from optimization_strategy import greedy_selection
 
 device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
-device = "cpu"
+print(device)
+# device = "cpu"
 
 # %%
 
