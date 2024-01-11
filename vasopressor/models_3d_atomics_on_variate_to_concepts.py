@@ -96,7 +96,7 @@ class CBM(nn.Module):
                  top_k_num = 0,
                  task_type = TaskType.CLASSIFICATION,
                  output_dim = 2,
-                 device = 'cuda',
+                 device = "cuda",
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
         
@@ -184,14 +184,14 @@ class CBM(nn.Module):
         self.cutoff_percentage_temperature = self.temperature
         self.ever_measured_temperature = self.temperature
         
-        self.atomic_activation_func = nn.Sigmoid()
-        self.concept_activation_func = nn.Sigmoid()
+        self.atomic_activation_func = nn.ReLU()
+        self.concept_activation_func = nn.ReLU()
         
         if self.use_summaries_for_atomics:
             # concat summaries to patient_batch during forward
             # in B x V x (T + Summaries)
             T_and_summaries = 2 * self.seq_len + self.num_summaries
-            self.layer_time_to_atomics = nn.Linear(T_and_summaries, self.num_atomics)
+            self.layer_time_to_atomics = nn.LazyLinear(self.num_atomics) # in T_and_summaries
             # -> B x V x A
             self.flatten = nn.Flatten()
             # -> B x V*A
@@ -256,18 +256,18 @@ class CBM(nn.Module):
         
         weighted_average = torch.sum(mean_weight_vector * (batch_changing_vars * batch_measurement_ind), dim=1)
 
-        mean_feats = weighted_average / (torch.sum(mean_weight_vector, dim=1) + epsilon_denom)
+        # mean_feats = weighted_average / (torch.sum(mean_weight_vector, dim=1) + epsilon_denom)
         # TODO denom forgot batch_measurement_ind
-        # mean_feats = weighted_average / (torch.sum(mean_weight_vector * batch_measurement_ind, dim=1) + epsilon_denom)
+        mean_feats = weighted_average / (torch.sum(mean_weight_vector * batch_measurement_ind, dim=1) + epsilon_denom)
         
         
         # VARIANCE FEATURES
         start_i, end_i = self.cs_parser.idxs_and_shapes['cs_var_']
         var_weight_vector = weight_vector[:, :, start_i : end_i]
         
-        x_mean = torch.mean(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True)
+        # x_mean = torch.mean(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True)
         # TODO x bar is not normal mean, but divide by sum of M
-        # x_mean = torch.sum(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True) / torch.sum(batch_measurement_ind, dim=1, keepdim=True)
+        x_mean = torch.sum(batch_measurement_ind * batch_changing_vars, dim=1, keepdim=True) / torch.sum(batch_measurement_ind, dim=1, keepdim=True)
 
         weighted_variance = torch.sum(batch_measurement_ind * var_weight_vector * (batch_changing_vars - x_mean)**2, dim=1)
         
@@ -469,6 +469,23 @@ class CBM(nn.Module):
         probs = self.forward_probabilities(patient_batch)
         return torch.argmax(probs, dim=1)
     
+    def forward_one_step_ahead(self, patient_batch, steps_ahead):
+        predictions = []
+        input = patient_batch # b t v
+        
+        for _ in range(steps_ahead):
+            output = self(input) # b x v
+            predictions.append(output)
+            
+            # add indicators and inflate to 3d
+            ind = torch.isfinite(output)
+            tmp = torch.cat([output, ind], axis=1)
+            tmp = tmp.unsqueeze(1)
+            
+            input = torch.cat([input[:, 1:, :], tmp], dim=1)
+        
+        return torch.cat(predictions, axis=1)
+    
     def get_num_concepts(self):
         return self.num_concepts
     
@@ -553,7 +570,7 @@ class CBM(nn.Module):
             
                 ### Train loop
                 for Xb, yb in train_loader:
-                    Xb, yb = Xb.to(self.device), yb.to(self.device)
+                    Xb, yb = Xb.to(self.device), yb[:, :self.output_dim].to(self.device)
                     y_pred = self(Xb)
 
                     loss = self.compute_loss(yb, y_pred, p_weight)
@@ -583,8 +600,8 @@ class CBM(nn.Module):
                         ### Validation loop
                         val_loss = 0
                         for Xb, yb in val_loader:
-                            Xb, yb = Xb.to(self.device), yb.to(self.device)
-                
+                            Xb, yb = Xb.to(self.device), yb[:, :self.output_dim].to(self.device)
+                            
                             # Forward pass.
                             y_pred = self(Xb)
 
@@ -628,7 +645,7 @@ class CBM(nn.Module):
         
         return self.val_losses[-1]
 
-    def compute_loss(self, yb, y_pred, p_weight):                
+    def compute_loss(self, yb, y_pred, p_weight):
         if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 2:
             task_loss = binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight)
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
@@ -636,25 +653,33 @@ class CBM(nn.Module):
         elif self.task_type == TaskType.REGRESSION:
             task_loss = mse_loss(y_pred, yb)
         else:
-            print("Loss not defined!")
-            exit()
+            raise NotImplementedError("Loss not defined!")
         
         # Lasso regularization
-        L1_norm = torch.norm(self.layer_to_concepts.weight, 1)
-        l1_loss = self.l1_lambda * L1_norm
+        l1_loss = 0
+        if self.l1_lambda != 0:
+            L1_norm = torch.norm(self.layer_to_concepts.weight, 1) + torch.norm(self.layer_time_to_atomics.weight, 1)
+            l1_loss = self.l1_lambda * L1_norm
         
         # Cosine_similarity regularization
         cos_sim_loss = 0
-        if self.num_concepts != 1:
-            concepts = torch.arange(self.num_concepts, device=self.device)
-            indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
-
-            weights = self.layer_to_concepts.weight[indices]  # Extract corresponding weight vectors
-            cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
-            
+        if self.cos_sim_lambda != 0:
+            cos_sim = self.cos_sim(self.layer_to_concepts) + self.cos_sim(self.layer_time_to_atomics)
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
         return task_loss + l1_loss + cos_sim_loss
+
+    def cos_sim(self, layer):
+        if layer.out_features == 1:
+            return 0
+        
+        concepts = torch.arange(layer.out_features, device=self.device)
+        indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
+        
+        weights = layer.weight[indices]  # Extract corresponding weight vectors
+        cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
+        
+        return cos_sim
 
 def plot_grad_flow(named_parameters):
     '''Plots the gradients flowing through different layers in the net during training.
