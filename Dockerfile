@@ -12,8 +12,8 @@ RUN apt-get clean && \
     apt-get install -y xdg-utils && \
     apt-get install -y python3-pip
 
-ARG USER_ID
-ARG GROUP_ID
+# ARG USER_ID
+# ARG GROUP_ID
 
 # add group, user with group and home, using the host id's
 # RUN groupadd -g ${GROUP_ID} karmbruster &&\
@@ -40,5 +40,6 @@ RUN pip install aeon torchmetrics darts einops captum graphviz
 ENTRYPOINT ["tail", "-f", "/dev/null"]
 
 # SETUP INSTRUCTIONS
-# docker build --build-arg USER_ID=$(id -u ${USER}) --build-arg GROUP_ID=$(id -g ${USER}) -t optimal-summaries-env .
-# docker run --gpus all -v /home/ml-stud-karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
+# --build-arg USER_ID=$(id -u ${USER}) --build-arg GROUP_ID=$(id -g ${USER})
+# docker build -t optimal-summaries-env .
+# docker run --gpus all --pid=host -v /home/ml-stud-karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
