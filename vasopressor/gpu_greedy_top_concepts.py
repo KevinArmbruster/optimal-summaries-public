@@ -71,7 +71,7 @@ changing_dim = len(changing_vars)
 input_dim = X_np.shape[2]
 
 
-experiment_folder = FLAGS.dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
+experiment_folder = FLAGS.dir or "/workdir/optimal-summaries-public/_models/mimic-iii/vasopressor/"
 experiment_top_k_folder = os.path.join(experiment_folder, "top-k/")
 if not os.path.exists(experiment_top_k_folder):
     os.makedirs(experiment_top_k_folder)

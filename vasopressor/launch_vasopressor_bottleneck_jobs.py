@@ -11,7 +11,7 @@ parser.add_argument('--dir', type=str, default='')
 FLAGS = parser.parse_args()
 
 
-directory = FLAGS.dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
+directory = FLAGS.dir or "/workdir/optimal-summaries-public/_models/mimic-iii/vasopressor/"
 if not os.path.exists(directory):
     os.makedirs(directory)
 

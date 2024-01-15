@@ -46,7 +46,7 @@ parser.add_argument('--save_every', type=int, default=100)
 
 FLAGS = parser.parse_args()
 
-directory = FLAGS.output_dir or "/workdir/optimal-summaries-public/vasopressor/models/mimic-iii/vasopressor/"
+directory = FLAGS.output_dir or "/workdir/optimal-summaries-public/_models/mimic-iii/vasopressor/"
 if not os.path.exists(directory):
     os.makedirs(directory)
 

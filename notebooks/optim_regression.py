@@ -143,7 +143,7 @@ pred_len = 96
 
 
 # %%
-experiment_folder = f"/workdir/optimal-summaries-public/vasopressor/models/etth1/forecasting-L{seq_len}-T{pred_len}/"
+experiment_folder = f"/workdir/optimal-summaries-public/_models/etth1/forecasting-L{seq_len}-T{pred_len}/"
 model_path = experiment_folder + "forecasting_c{}.pt"
 random_seed = 1
 
