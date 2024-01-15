@@ -160,18 +160,18 @@ class CBM(nn.Module):
         
         
         # Initialize cutoff_times to by default use all of the timesteps.
-        self.cutoff_percentage = torch.zeros(1, self.cs_parser.num_weights, device=self.device)
+        self.cutoff_percentage = torch.zeros(1, self.cs_parser.num_weights, dtype=torch.float32, device=self.device)
         
         if self.differentiate_cutoffs:
             cutoff_vals = self.init_cutoffs_f(self.cs_parser.num_weights)
-            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, device=self.device).reshape(1, self.cs_parser.num_weights))
+            self.cutoff_percentage = nn.Parameter(torch.tensor(cutoff_vals, requires_grad=True, dtype=torch.float32, device=self.device).reshape(1, self.cs_parser.num_weights))
 
         # times is tensor of size (seq_len x num_weights)
         self.times = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.cs_parser.num_weights, 1))), device=self.device)
         
         
-        self.lower_thresholds = nn.Parameter(torch.tensor(self.init_lower_thresholds_f(self.changing_dim), requires_grad=True, device=self.device))
-        self.upper_thresholds = nn.Parameter(torch.tensor(self.init_upper_thresholds_f(self.changing_dim), requires_grad=True, device=self.device))
+        self.lower_thresholds = nn.Parameter(torch.tensor(self.init_lower_thresholds_f(self.changing_dim), requires_grad=True, dtype=torch.float32, device=self.device))
+        self.upper_thresholds = nn.Parameter(torch.tensor(self.init_upper_thresholds_f(self.changing_dim), requires_grad=True, dtype=torch.float32, device=self.device))
         
         self.thresh_temperature = self.temperature
         self.cutoff_percentage_temperature = self.temperature
@@ -567,7 +567,7 @@ class CBM(nn.Module):
             
                 ### Train loop
                 for Xb, yb in train_loader:
-                    Xb, yb = Xb.to(self.device), yb[:, :self.output_dim].to(self.device)
+                    Xb, yb = Xb.to(self.device), yb.to(self.device)
                     y_pred = self(Xb)
 
                     loss = self.compute_loss(yb, y_pred, p_weight)
@@ -597,7 +597,7 @@ class CBM(nn.Module):
                         ### Validation loop
                         val_loss = 0
                         for Xb, yb in val_loader:
-                            Xb, yb = Xb.to(self.device), yb[:, :self.output_dim].to(self.device)
+                            Xb, yb = Xb.to(self.device), yb.to(self.device)
                             
                             y_pred = self(Xb)
 
