@@ -1,5 +1,6 @@
 # %%
-
+import sys
+sys.path.append('..')
 from darts.datasets import ETTh1Dataset
 from darts.models import NLinearModel
 from darts.metrics.metrics import mae, mse
@@ -8,10 +9,7 @@ import pandas as pd
 import torch
 import random
 import csv
-import datetime
-import os
-import gc
-import time
+import os, subprocess, gc, time, datetime
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
@@ -23,7 +21,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 import optuna
 from optuna.trial import TrialState
-from optuna.visualization import * #plot_optimization_history, plot_param_importances, plot_timeline
+from optuna.visualization import *
 
 import models.original_models as original_models
 import models.models_3d_atomics_on_variate_to_concepts as new_models
@@ -32,9 +30,10 @@ from models.helper import *
 from models.param_initializations import *
 from models.optimization_strategy import greedy_selection
 
-device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
-torch.cuda.set_device(torch.cuda.device_count()-1)
-print(device, torch.cuda.current_device())
+print("selecting gpu...")
+gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
+device = torch.device(f'cuda:{gpu_id}') if torch.cuda.is_available else torch.device('cpu')
+print("current device", device)
 
 
 # %%
@@ -128,11 +127,11 @@ set_seed(random_seed)
 
 
 # %%
-seq_len = 100
-pred_len = 30
+seq_len = 336
+pred_len = 96
 n_atomics_list = list(range(2,11,2))
 n_concepts_list = list(range(2,11,2))
-changing_dim = 1 # len(series.columns)
+changing_dim = len(series.columns)
 input_dim = 2 * changing_dim
 
 
@@ -153,6 +152,7 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
                             output_dim = output_dim,
                             top_k=top_k,
                             task_type=new_models.TaskType.REGRESSION,
+                            device=device
                             )
     model = model.to(device)
     return model
@@ -161,7 +161,7 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
 # %%
 def objective(trial: TrialState):
     n_atomics = trial.suggest_int("n_atomics", 8, 256, step=8)
-    n_concepts = trial.suggest_int("n_concepts", 8, 512, step=8)
+    n_concepts = trial.suggest_int("n_concepts", 8, 1024, step=8)
     use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [True, False])
     use_indicators = trial.suggest_categorical('use_indicators', [True, False])
     
@@ -207,7 +207,7 @@ def objective(trial: TrialState):
 
 # %%
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=5, gc_after_trial=True, n_trials=500, timeout=60 * 60 * 12, show_progress_bar=True) #60 * 60 * 12)
+study.optimize(objective, n_jobs=3, gc_after_trial=True, n_trials=500) #, timeout=60 * 60 * 14)
 
 pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
 complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -229,18 +229,18 @@ time.sleep(10) # wait for printing
 
 # Plots
 fig = plot_optimization_history(study)
-fig.write_image("plot_optimization_history.png") 
+fig.write_image("plot_optimization_history1.png") 
 fig = plot_param_importances(study)
-fig.write_image("plot_param_importances.png") 
+fig.write_image("plot_param_importances1.png") 
 fig = plot_timeline(study)
-fig.write_image("plot_timeline.png") 
+fig.write_image("plot_timeline1.png") 
 fig = plot_intermediate_values(study)
-fig.write_image("plot_intermediate_values.png") 
+fig.write_image("plot_intermediate_values1.png") 
 fig = plot_parallel_coordinate(study, params=["n_atomics", "n_concepts"])
-fig.write_image("plot_parallel_coordinate.png") 
+fig.write_image("plot_parallel_coordinate1.png") 
 fig = plot_contour(study)
-fig.write_image("plot_contour.png") 
+fig.write_image("plot_contour1.png") 
 fig = plot_param_importances(study, target=lambda t: t.duration.total_seconds(), target_name="duration")
-fig.write_image("plot_param_importances_duration.png") 
+fig.write_image("plot_param_importances_duration1.png") 
 
-# nohup python3 hyperparameter_optim.py &> log.txt &
+# nohup python3 hyperparameter_optim_copy.py > multilog.txt 2>&1 &

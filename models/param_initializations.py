@@ -31,8 +31,8 @@ def init_zeros(d):
     return np.zeros(d)
 
 def set_seed(r):
-    torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms(True)
+    # torch.backends.cudnn.deterministic = True
+    # torch.use_deterministic_algorithms(True)
     random.seed(r)
     torch.manual_seed(r)
     torch.cuda.manual_seed(r)

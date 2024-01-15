@@ -1,9 +1,12 @@
+
+import sys
+sys.path.append('..')
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from typing import List
-from models import CBM
+from models.original_models import CBM
 from tqdm import tqdm
 from torchmetrics import Metric
 from collections import defaultdict

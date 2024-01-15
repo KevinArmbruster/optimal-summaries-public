@@ -1,5 +1,6 @@
 # %%
-
+import sys
+sys.path.append('..')
 from darts.datasets import ETTh1Dataset
 from darts.models import NLinearModel
 from darts.metrics.metrics import mae, mse
@@ -8,10 +9,7 @@ import pandas as pd
 import torch
 import random
 import csv
-import datetime
-import os
-import gc
-import time
+import os, subprocess, gc, time, datetime
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
@@ -23,7 +21,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 import optuna
 from optuna.trial import TrialState
-from optuna.visualization import * #plot_optimization_history, plot_param_importances, plot_timeline
+from optuna.visualization import *
 
 import models.original_models as original_models
 import models.models_3d_atomics_on_variate_to_concepts as new_models
@@ -32,8 +30,9 @@ from models.helper import *
 from models.param_initializations import *
 from models.optimization_strategy import greedy_selection
 
-device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
-print(device, torch.cuda.current_device())
+gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
+device = torch.device(f'cuda:{gpu_id}') if torch.cuda.is_available else torch.device('cpu')
+print("current device", device)
 
 
 # %%
@@ -139,8 +138,8 @@ set_seed(random_seed)
 
 
 # %%
-seq_len = 100
-pred_len = 30
+seq_len = 336
+pred_len = 96
 n_atomics_list = list(range(2,11,2))
 n_concepts_list = list(range(2,11,2))
 changing_dim = 1 # len(series.columns)
@@ -164,6 +163,7 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
                             output_dim = output_dim,
                             top_k=top_k,
                             task_type=new_models.TaskType.REGRESSION,
+                            device=device
                             )
     model = model.to(device)
     return model
@@ -171,8 +171,8 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
 
 # %%
 def objective(trial: TrialState):
-    n_atomics = trial.suggest_int("n_atomics", 1, 512, step=50)
-    n_concepts = trial.suggest_int("n_concepts", 1, 1024, step=50)
+    n_atomics = trial.suggest_int("n_atomics", 8, 1024, step=8)
+    n_concepts = trial.suggest_int("n_concepts", 8, 1024, step=8)
     use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [True, False])
     use_indicators = trial.suggest_categorical('use_indicators', [True, False])
     
@@ -190,7 +190,7 @@ def objective(trial: TrialState):
         mse_metric = MeanSquaredError().to(device)
         model.eval()
         with torch.inference_mode():
-            for batch_idx, (Xb, yb) in enumerate(val_loader):
+            for Xb, yb in val_loader:
                 Xb, yb = Xb.to(device), yb.to(device)
                 preds = model.forward(Xb)
                 
@@ -207,13 +207,18 @@ def objective(trial: TrialState):
         return mse
     
     except RuntimeError as e:
+        
+        del model, train_loader, val_loader, test_loader, scaler
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         print(f"RuntimeError occurred: {e}")
         return 1e6
 
 
 # %%
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=5, gc_after_trial=True, n_trials=500, timeout=60 * 60 * 12) #60 * 60 * 12)
+study.optimize(objective, n_jobs=4, gc_after_trial=True, n_trials=500) #, timeout=60 * 60 * 10) #60 * 60 * 12)
 
 pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
 complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -249,4 +254,6 @@ fig.write_image("plot_contour.png")
 fig = plot_param_importances(study, target=lambda t: t.duration.total_seconds(), target_name="duration")
 fig.write_image("plot_param_importances_duration.png") 
 
-# nohup python3 hyperparameter_optim.py &> log.txt &
+# nohup python3 hyperparameter_optim.py > log.txt 2>&1 &
+# ps -ef | grep "KA_Time" | awk '$0 !~ /grep/ {print $2}' | xargs kill
+# ps -ef | grep "hyperparameter_optim" | awk '$0 !~ /grep/ {print $2}' | xargs kill

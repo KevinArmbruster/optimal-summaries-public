@@ -1,4 +1,6 @@
 
+import sys
+sys.path.append('..')
 import numpy as np
 import pandas as pd
 import pickle
@@ -9,14 +11,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
-from custom_losses import LSTM_compound_loss, custom_bce_horseshoe
-from param_initializations import set_seed, init_cutoffs_to_zero, init_rand_lower_thresholds, init_rand_upper_thresholds
+from models.custom_losses import LSTM_compound_loss, custom_bce_horseshoe
+from models.param_initializations import set_seed, init_cutoffs_to_zero, init_rand_lower_thresholds, init_rand_upper_thresholds
 from torchmetrics import AUROC, Accuracy, MeanSquaredError
 
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
-from EarlyStopping import EarlyStopping
-from weights_parser import WeightsParser
+from models.EarlyStopping import EarlyStopping
+from models.weights_parser import WeightsParser
 
 from tqdm import tqdm
 from time import sleep

@@ -1,4 +1,6 @@
 
+import sys
+sys.path.append('..')
 import numpy as np
 import pandas as pd
 import torch
@@ -9,8 +11,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 from models.param_initializations import *
-from EarlyStopping import EarlyStopping
-from weights_parser import WeightsParser
+from models.EarlyStopping import EarlyStopping
+from models.weights_parser import WeightsParser
 
 from tqdm import tqdm
 from time import sleep
