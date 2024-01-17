@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 from torch.optim.lr_scheduler import LambdaLR
 from torchmetrics.classification import Accuracy, AUROC
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
-
+import queue
 import optuna
 from optuna.trial import TrialState
 from optuna.visualization import *
@@ -47,7 +47,7 @@ lengths.sort()
 MIN_TS_SIZE = min(lengths)
 MAX_TS_SIZE = max(lengths)
 
-print(MIN_TS_SIZE, MAX_TS_SIZE)
+# print(MIN_TS_SIZE, MAX_TS_SIZE)
 
 
 # %%
@@ -72,12 +72,12 @@ def preprocess_data_multiclass(_X, _y):
     
     # initiazing datasets
     weights = compute_class_weight(class_weight='balanced', classes=y_unique, y=_y)
-    weights = torch.Tensor(weights).to(device)
+    weights = torch.Tensor(weights)
     
     return data, _y, num_classes, weights
 
 
-def initialize_data(r, _X, _y, batch_size = 256, multiclass = False):   
+def initialize_data(r, _X, _y, batch_size = 256):   
     
     # train-test-split
     torch.set_printoptions(sci_mode=False)
@@ -86,25 +86,23 @@ def initialize_data(r, _X, _y, batch_size = 256, multiclass = False):
     # train-val split
     X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size = 0.20, random_state = r, stratify = y_train)
 
-    X_train_pt = torch.tensor(X_train)
-    y_train_pt = torch.tensor(y_train, torch.FloatTensor)
+    X_train_pt = torch.tensor(X_train, dtype=torch.float32)
+    y_train_pt = torch.tensor(y_train)
+    
+    X_val_pt = torch.tensor(X_val, dtype=torch.float32)
+    y_val_pt = torch.tensor(y_val)
 
-    X_val_pt = torch.tensor(X_val)
-    y_val_pt = torch.tensor(y_val, torch.FloatTensor)
-
-    X_test_pt = torch.tensor(X_test)
-    y_test_pt = torch.tensor(y_test, torch.FloatTensor)
-    if multiclass:
-        y_test_pt = torch.argmax(y_test_pt, dim=1)
-
+    X_test_pt = torch.tensor(X_test, dtype=torch.float32)
+    y_test_pt = torch.tensor(y_test)
+    
     train_dataset = TensorDataset(X_train_pt, y_train_pt)
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
     val_dataset = TensorDataset(X_val_pt, y_val_pt)
-    val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=False, num_workers=0, pin_memory=True)
 
     test_dataset = TensorDataset(X_test_pt, y_test_pt)
-    test_loader = DataLoader(test_dataset, batch_size = X_test_pt.shape[0], shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size = X_test_pt.shape[0], shuffle=False, num_workers=0, pin_memory=True)
     
     return train_loader, val_loader, test_loader
 
@@ -116,17 +114,8 @@ set_seed(random_seed)
 
 
 # %%
-seq_len = 336
-pred_len = 96
-n_atomics_list = list(range(2,11,2))
-n_concepts_list = list(range(2,11,2))
-changing_dim = 1 # len(series.columns)
-input_dim = 2 * changing_dim
 
-
-# %%
-
-def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim, use_summaries_for_atomics, use_indicators, top_k=''):
+def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim, use_summaries_for_atomics, use_indicators, device):
     model = new_models.CBM(input_dim = input_dim, 
                             changing_dim = changing_dim, 
                             seq_len = seq_len,
@@ -139,8 +128,6 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
                             l1_lambda = trial.suggest_float("l1_lambda", 1e-8, 1e-2, log=True), # 1e-5, # 0.001,
                             cos_sim_lambda = trial.suggest_float("cos_sim_lambda", 1e-5, 1e-2, log=True), # 1e-5, # 0.01,
                             output_dim = output_dim,
-                            top_k=top_k,
-                            task_type=new_models.TaskType.REGRESSION,
                             device=device
                             )
     model = model.to(device)
@@ -148,63 +135,87 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
 
 
 # %%
+
+gpu_queue = queue.Queue()
+items_to_process = ["cuda:14", "cuda:14", "cuda:14", "cuda:15", "cuda:15", "cuda:15"]
+for item in items_to_process:
+    gpu_queue.put(item)
+    
+
 def objective(trial: TrialState):
-    n_atomics = trial.suggest_int("n_atomics", 8, 1024, step=8)
-    n_concepts = trial.suggest_int("n_concepts", 8, 1024, step=8)
+    device = gpu_queue.get()
+    
+    n_atomics = trial.suggest_int("n_atomics", 8, 256, step=4)
+    n_concepts = trial.suggest_int("n_concepts", 8, 512, step=4)
     use_summaries_for_atomics = trial.suggest_categorical('use_summaries_for_atomics', [True, False])
     use_indicators = trial.suggest_categorical('use_indicators', [True, False])
     
     data, _y, num_classes, weights = preprocess_data_multiclass(X, y)
-    train_loader, val_loader, test_loader = initialize_data(1, data, _y, multiclass=True)
+    train_loader, val_loader, test_loader = initialize_data(1, data, _y)
     
     input_dim = data.shape[2]
     changing_dim = X[0].shape[0]
     seq_len = data.shape[1]
 
     auroc_metric = AUROC(task="multiclass", num_classes=num_classes).to(device)
-    accuracy_metric = Accuracy(task="multiclass", num_classes=num_classes).to(device)
+    accuracy_metric = Accuracy(task="multiclass", num_classes=num_classes, ).to(device)
 
-    model = initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim=pred_len, use_summaries_for_atomics=use_summaries_for_atomics, use_indicators=use_indicators)
+    model = initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim=num_classes, use_summaries_for_atomics=use_summaries_for_atomics, use_indicators=use_indicators, device=device)
     
     model.activation_func = torch.nn.ReLU() if trial.suggest_categorical('use_relu', [True, False]) else torch.nn.Sigmoid()
     scheduler = None # torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=model.optimizer, patience=10, factor=0.7)
     
     
     try:
-        val_loss = model.fit(train_loader, val_loader, None, save_model_path=None, max_epochs=10000, scheduler=scheduler, patience=100, trial=trial)
+        val_loss = model.fit(train_loader, val_loader, p_weight=weights.to(device), save_model_path=None, max_epochs=10000, scheduler=scheduler, patience=100, trial=trial)
 
-        mse_metric = MeanSquaredError().to(device)
+        auroc_metric = AUROC(task="multiclass", num_classes=num_classes).to(device)
+        accuracy_metric = Accuracy(task="multiclass", num_classes=num_classes).to(device)
+
         model.eval()
         with torch.inference_mode():
+            
             for Xb, yb in val_loader:
                 Xb, yb = Xb.to(device), yb.to(device)
-                preds = model.forward(Xb)
+                probs = model.forward_probabilities(Xb)
                 
-                mse = mse_metric(preds, yb).item()
-            mse = mse_metric.compute().item()
-            mse_metric.reset()
+                auc = auroc_metric(probs, yb).item()
+                acc = accuracy_metric(probs, yb).item()
+            auc = round(auroc_metric.compute().item(), ndigits=5)
+            acc = round(accuracy_metric.compute().item(), ndigits=5)
+            auroc_metric.reset()
+            accuracy_metric.reset()
         
         
-        del model, train_loader, val_loader, test_loader, scaler
+        del model, train_loader, val_loader, test_loader
         gc.collect()
         torch.cuda.empty_cache()
+        
+        gpu_queue.put(device)
 
-        trial.set_user_attr('val_loss', val_loss)
-        return mse
+        trial.set_user_attr('acc', acc)
+        trial.set_user_attr('auc', auc)
+        return val_loss
+    
+    except optuna.exceptions.TrialPruned as p:
+        gpu_queue.put(device)
+        raise p
     
     except RuntimeError as e:
         
-        del model, train_loader, val_loader, test_loader, scaler
+        del model, train_loader, val_loader, test_loader
         gc.collect()
         torch.cuda.empty_cache()
+        gpu_queue.put(device)
         
         print(f"RuntimeError occurred: {e}")
         return 1e6
 
 
 # %%
+
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_jobs=4, gc_after_trial=True, n_trials=500) #, timeout=60 * 60 * 10) #60 * 60 * 12)
+study.optimize(objective, n_jobs=2, gc_after_trial=True, n_trials=200, timeout=60 * 60 * 18)
 
 pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
 complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
@@ -240,6 +251,6 @@ fig.write_image("plot_contour.png")
 fig = plot_param_importances(study, target=lambda t: t.duration.total_seconds(), target_name="duration")
 fig.write_image("plot_param_importances_duration.png") 
 
-# nohup python3 hyperparameter_optim.py > log.txt 2>&1 &
+# nohup python3 HPO_classification.py > hpo.txt 2>&1 &
 # ps -ef | grep "KA_Time" | awk '$0 !~ /grep/ {print $2}' | xargs kill
 # ps -ef | grep "hyperparameter_optim" | awk '$0 !~ /grep/ {print $2}' | xargs kill

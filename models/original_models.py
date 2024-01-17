@@ -844,12 +844,14 @@ class CBM(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
             self.output_af = nn.Sigmoid()
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             self.output_af = nn.Softmax(dim=1)
         elif self.task_type == TaskType.REGRESSION:
             self.output_af = nn.Identity()
+        else:
+            raise NotImplementedError("Config not defined!")
 
 
         self.weight_parser = WeightsParser()
@@ -1182,7 +1184,6 @@ class CBM(nn.Module):
                     plot_grad_flow(self.named_parameters())
                     return
                 
-                
                 if (self.top_k != ''):
                     self.bottleneck.weight.grad.fill_(0.)
         
@@ -1237,16 +1238,15 @@ class CBM(nn.Module):
         return self.val_losses[-1]
 
     def compute_loss(self, yb, y_pred, p_weight):                
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 2:
-            task_loss = binary_cross_entropy_with_logits(y_pred, yb, pos_weight = p_weight)
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
+            task_loss = binary_cross_entropy_with_logits(y_pred, yb.float(), pos_weight = p_weight)
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             task_loss = cross_entropy(y_pred, yb, weight = p_weight)
         elif self.task_type == TaskType.REGRESSION:
             task_loss = mse_loss(y_pred, yb)
         else:
-            print("Loss not defined!")
-            exit()
-                
+            raise NotImplementedError("Config not defined!")
+        
         # Lasso regularization
         L1_norm = torch.norm(self.bottleneck.weight, 1)
         l1_loss = self.l1_lambda * L1_norm 

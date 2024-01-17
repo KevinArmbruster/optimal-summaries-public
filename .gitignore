@@ -5,7 +5,7 @@
 *.pyc
 *.txt
 /data/
-/vasopressor/models
+_models
 *.png
 *.dot
 *.svg
