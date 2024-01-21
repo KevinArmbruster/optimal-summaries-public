@@ -19,6 +19,7 @@ from sklearn.metrics import roc_auc_score
 from torch.utils.data import TensorDataset, DataLoader
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
+from models.differentiable_summaries import calculate_summaries
 
 from tqdm import tqdm
 from time import sleep
@@ -910,169 +911,10 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def encode_patient_batch(self, patient_batch, epsilon_denom=1e-8):
-        # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
-        # Returns pre-sigmoid P(Y = 1 | patient_batch)
-        temperatures = torch.tensor(np.full((1, self.cs_parser.num_weights), self.cutoff_percentage_temperature), device=self.device)
-        
-        # Get changing variables
-        batch_changing_vars = patient_batch[:, :, :self.changing_dim]
-        batch_measurement_indicators = patient_batch[:, :, self.changing_dim: self.changing_dim * 2]
-        batch_static_vars = patient_batch[:, 0, self.changing_dim * 2:] # static is the same accross time
-        
-        weight_vector = self.sigmoid((self.times - self.cutoff_percentage) / temperatures).reshape(1, self.seq_len, self.cs_parser.num_weights)
-        
-        # MEAN FEATURES
-        # Calculate \sum_t (w_t * x_t * m_t)
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_mean_']
-        mean_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        weighted_average = torch.sum(mean_weight_vector * (batch_changing_vars * batch_measurement_indicators), dim=1)
-
-        mean_feats = (weighted_average / (torch.sum(mean_weight_vector, dim=1) + epsilon_denom))
-        
-        # VARIANCE FEATURES
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_var_']
-        var_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        x_mean = torch.mean(batch_measurement_indicators * batch_changing_vars, dim=1, keepdim=True)
-        weighted_variance = torch.sum(batch_measurement_indicators * var_weight_vector * (batch_changing_vars - x_mean)**2, dim=1)        
-        normalizing_term = torch.sum(batch_measurement_indicators * var_weight_vector, dim=1)**2 / (torch.sum(batch_measurement_indicators * var_weight_vector, dim=1)**2 + torch.sum(batch_measurement_indicators * var_weight_vector ** 2, dim=1) + epsilon_denom)
-        
-        var_feats = weighted_variance / (normalizing_term + epsilon_denom)
-        
-
-        # INDICATOR FOR EVER BEING MEASURED
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_ever_measured_']
-        ever_measured_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        ever_measured_feats = self.sigmoid( torch.sum(ever_measured_weight_vector * batch_measurement_indicators, dim=1) / (self.ever_measured_temperature * torch.sum(ever_measured_weight_vector, dim=1) + epsilon_denom)) - 0.5
-        
-        
-        # MEAN OF INDICATOR SEQUENCE
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_mean_indicators_']
-        mean_ind_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        weighted_ind_average = torch.sum(mean_ind_weight_vector * batch_measurement_indicators, dim=1)
-        mean_ind_feats = weighted_ind_average / (torch.sum(mean_ind_weight_vector, dim=1) + epsilon_denom)
-        
-        # VARIANCE OF INDICATOR SEQUENCE
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_var_indicators_']
-        var_ind_weight_vector = weight_vector[:, :, start_i : end_i]
-                
-        x_mean_ind = torch.mean(batch_measurement_indicators, dim=1, keepdim=True)
-        weighted_variance_ind = torch.sum(var_ind_weight_vector * (batch_measurement_indicators - x_mean_ind)**2, dim=1)        
-        normalizing_term = torch.sum(var_ind_weight_vector, dim=1)**2 / (torch.sum(var_ind_weight_vector, dim=1)**2 + torch.sum(var_ind_weight_vector ** 2, dim=1) + epsilon_denom)
-        
-        var_ind_feats = weighted_variance_ind / (normalizing_term + epsilon_denom)
-        
-        
-        # COUNT OF SWITCHES
-        # Compute the number of times the indicators switch from missing to measured, or vice-versa.
-        
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_switches_']
-        switches_weight_vector = weight_vector[:, :, start_i : end_i][:, :-1, :]
-        
-        # Calculate m_{n t + 1} - m_{ n t}
-        # Sum w_t + sigmoids of each difference
-        later_times = batch_changing_vars[:, 1:, :]
-        earlier_times = batch_changing_vars[:, :-1, :]
-        
-        switch_feats = torch.sum(switches_weight_vector * torch.abs(later_times - earlier_times), dim=1) / (torch.sum(switches_weight_vector, dim=1) + epsilon_denom)
-        
-        # FIRST TIME MEASURED
-        # LAST TIME MEASURED
-        
-        # For each variable in the batch, compute the first time it was measured.
-        # Set equal to -1 if never measured.
-        
-        # For each feature, calculate the first time it was measured
-        # Index of the second dimension of the indicators
-
-        mask_max_values, mask_max_indices = torch.max(batch_measurement_indicators, dim=1)
-        # if the max-mask is zero, there is no nonzero value in the row
-        mask_max_indices[mask_max_values == 0] = -1
-        
-        first_time_feats = mask_max_indices / float(batch_measurement_indicators.shape[1])
-        
-        # Last time measured is the last index of the max.
-        # https://discuss.pytorch.org/t/how-to-reverse-a-torch-tensor/382
-        flipped_batch_measurement_indicators = torch.flip(batch_measurement_indicators, [1])
-        
-        mask_max_values, mask_max_indices = torch.max(flipped_batch_measurement_indicators, dim=1)
-        # if the max-mask is zero, there is no nonzero value in the row
-        mask_max_indices[mask_max_values == 0] = batch_measurement_indicators.shape[1]
-        
-        last_time_feats = (float(batch_measurement_indicators.shape[1]) - mask_max_indices) / float(batch_measurement_indicators.shape[1])
-        
-        # SLOPE OF L2
-        # STANDARD ERROR OF L2     
-        
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_slope_']
-        slope_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        # Zero out the batch_changing_vars so that they are zero if the features are not measured.
-        linreg_y = batch_changing_vars * batch_measurement_indicators
-        
-        # The x-values for this linear regression are the times.
-        # Zero them out so that they are zero if the features are not measured.
-        linreg_x = torch.tensor(np.transpose(np.tile(range(self.seq_len), (self.changing_dim, 1))), device=self.device)
-        linreg_x = linreg_x.repeat(linreg_y.shape[0], 1, 1) * batch_measurement_indicators
-        
-        # Now, compute the slope and standard error.
-        weighted_x = torch.unsqueeze(torch.sum(slope_weight_vector * linreg_x, dim = 1) / (torch.sum(slope_weight_vector, dim = 1) + epsilon_denom), 1)
-        weighted_y = torch.unsqueeze(torch.sum(slope_weight_vector * linreg_y, dim = 1) / (torch.sum(slope_weight_vector, dim = 1) + epsilon_denom), 1)
-        
-        slope_num = torch.sum(slope_weight_vector * (linreg_x - weighted_x) * (linreg_y - weighted_y), dim=1)
-        slope_den = torch.sum(slope_weight_vector * (linreg_x - weighted_x)**2, dim =1)
-        
-        slope_feats = slope_num / (slope_den + epsilon_denom)
-        
-        # If the denominator is zero, set the feature equal to 0.
-        var_denom = torch.sum(slope_weight_vector * (linreg_x - weighted_x)**2, dim=1)
-        slope_stderr_feats = 1 / (var_denom + epsilon_denom)
-        
-        slope_stderr_feats = torch.where(var_denom > 0, slope_stderr_feats, var_denom)
-        
-        # HOURS ABOVE THRESHOLD
-        # HOURS BELOW THRESHOLD
-        
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_hours_above_threshold_']
-        above_thresh_weight_vector = weight_vector[:, :, start_i : end_i]
-        
-        start_i, end_i = self.cs_parser.idxs_and_shapes['cs_hours_below_threshold_']
-        below_thresh_weight_vector = weight_vector[:, :, start_i : end_i]
-            
-        upper_features = self.sigmoid((batch_changing_vars - self.upper_thresholds)/self.thresh_temperature)
-        lower_features = self.sigmoid((self.lower_thresholds - batch_changing_vars)/self.thresh_temperature)
-                
-        # (batch, timestep, features)
-        # sum upper_features and lower_features across timesteps
-        above_threshold_feats = torch.sum(batch_measurement_indicators * above_thresh_weight_vector * upper_features, dim=1) / (torch.sum(batch_measurement_indicators * above_thresh_weight_vector, dim=1) + epsilon_denom)
-        below_threshold_feats = torch.sum(batch_measurement_indicators * below_thresh_weight_vector * lower_features, dim=1) / (torch.sum(batch_measurement_indicators * below_thresh_weight_vector, dim=1) + epsilon_denom)
-        
-        # feats_time_23 = patient_batch[:, 23, :]     
-        # time_feats = patient_batch[:, self.seq_len-1, :] # use last timestamp
-        
-        # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
-        changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
-        indicators_2d = batch_measurement_indicators.reshape(batch_measurement_indicators.shape[0], -1)
-        time_feats = torch.cat((changing_vars_2d, indicators_2d, batch_static_vars), dim=1)
-        
-        # print("patient_batch", patient_batch.shape)
-        # print("time_feats", time_feats.shape)
-
-        cat = torch.cat((time_feats.float(), mean_feats.float(), var_feats.float(), ever_measured_feats.float(), mean_ind_feats.float(), var_ind_feats.float(), switch_feats.float(), slope_feats.float(), slope_stderr_feats.float(), first_time_feats.float(), last_time_feats.float(), above_threshold_feats.float(), below_threshold_feats.float()), axis=1)
-
-        # print("mean_feats", mean_feats.shape)
-        # print("var_feats", var_feats.shape)
-        # print("cat", cat.shape)
-
-        return cat
-    
     def forward(self, patient_batch, epsilon_denom=1e-8):
         # Encodes the patient_batch, then computes the forward.
-        encoded = self.encode_patient_batch(patient_batch, epsilon_denom)
+        batch_changing_vars, batch_measurement_inds, batch_static_vars, summaries, time_feats_2d = calculate_summaries(patient_batch, use_indicators, use_fixes, epsilon_denom)
+        cat = torch.cat((time_feats_2d, summaries), axis=1)
         bottleneck = self.bottleneck(encoded)
         activation = self.sigmoid(bottleneck)
         return self.linear(activation)
