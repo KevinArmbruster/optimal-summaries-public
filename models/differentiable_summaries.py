@@ -1,6 +1,7 @@
 import torch
+import numpy as np
 
-def calculate_summaries(model, patient_batch, use_indicators, use_fixes, epsilon_denom=1e-8):
+def calculate_summaries(model, patient_batch, use_indicators, use_fixes, use_only_last_timestep, epsilon_denom=1e-8):
     summaries = []
     
     # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
@@ -194,9 +195,9 @@ def calculate_summaries(model, patient_batch, use_indicators, use_fixes, epsilon
     if use_only_last_timestep:
         time_feats_2d = patient_batch[:, model.seq_len-1, :]
         
-        # b t v
-        batch_changing_vars = batch_changing_vars[:, model.seq_len-1, :]
-        batch_measurement_inds = batch_measurement_inds[:, model.seq_len-1, :]
+        # # b t v
+        # batch_changing_vars = batch_changing_vars[:, model.seq_len-1, :]
+        # batch_measurement_inds = batch_measurement_inds[:, model.seq_len-1, :]
     else:
         # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
         changing_vars_2d = batch_changing_vars.reshape(batch_changing_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times

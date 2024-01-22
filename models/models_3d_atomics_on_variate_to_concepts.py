@@ -13,6 +13,7 @@ from models.param_initializations import *
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
 from models.differentiable_summaries import calculate_summaries
+from models.helper import plot_grad_flow
 
 from tqdm import tqdm
 from time import sleep
@@ -70,27 +71,28 @@ def create_state_dict(self, epoch):
 
 class CBM(nn.Module):
     def __init__(self, 
-                 input_dim, 
-                 changing_dim, 
-                 seq_len,
-                 num_atomics,
-                 use_summaries_for_atomics,
-                 use_indicators,
-                 num_concepts,
-                 differentiate_cutoffs = True,
-                 init_cutoffs_f = init_cutoffs_to_50perc,
-                 init_lower_thresholds_f = init_rand_lower_thresholds, 
-                 init_upper_thresholds_f = init_rand_upper_thresholds,
-                 temperature = 0.1,
-                 opt_lr = 1e-4,
-                 opt_weight_decay = 0.,
-                 l1_lambda=0.,
-                 cos_sim_lambda=0.,
-                 top_k = '',
-                 top_k_num = 0,
-                 task_type = TaskType.CLASSIFICATION,
-                 output_dim = 2,
-                 device = "cuda",
+                input_dim, 
+                changing_dim, 
+                seq_len,
+                num_atomics,
+                num_concepts,
+                output_dim,
+                use_summaries_for_atomics,
+                use_indicators,
+                use_fixes,
+                differentiate_cutoffs = True,
+                init_cutoffs_f = init_cutoffs_to_50perc,
+                init_lower_thresholds_f = init_rand_lower_thresholds, 
+                init_upper_thresholds_f = init_rand_upper_thresholds,
+                temperature = 0.1,
+                opt_lr = 1e-4,
+                opt_weight_decay = 0.,
+                l1_lambda=0.,
+                cos_sim_lambda=0.,
+                top_k = '',
+                top_k_num = 0,
+                task_type = TaskType.CLASSIFICATION,
+                device = "cuda",
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
         
@@ -117,9 +119,11 @@ class CBM(nn.Module):
         self.seq_len = seq_len
         self.num_concepts = num_concepts
         self.num_atomics = num_atomics
-        self.use_summaries_for_atomics = use_summaries_for_atomics
         self.num_summaries = 12 # number of calculated summaries
+        
+        self.use_summaries_for_atomics = use_summaries_for_atomics
         self.use_indicators = use_indicators
+        self.use_fixes = use_fixes
         
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
@@ -147,7 +151,7 @@ class CBM(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
             self.output_af = nn.Sigmoid()
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             self.output_af = nn.Softmax(dim=1)
@@ -234,7 +238,7 @@ class CBM(nn.Module):
     
     def forward(self, patient_batch, epsilon_denom=1e-8):
         
-        batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries, time_feats_2d = calculate_summaries(patient_batch, self.use_indicators, self.use_fixes, epsilon_denom)
+        batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, False, epsilon_denom)
         
         if self.use_indicators:
             cat = torch.cat([batch_changing_vars, batch_measurement_indicators], axis=1) # cat along time instead of var
@@ -243,8 +247,13 @@ class CBM(nn.Module):
         rearranged = rearrange(cat, "b t v -> b v t")
         
         if self.use_summaries_for_atomics:
+            # static vars are concatinated along time, for each var, similar to summaries
+            batch_static_vars = batch_static_vars.unsqueeze(1) # b x 1 x 8
+            batch_static_vars = batch_static_vars.expand(-1, rearranged.size(1), -1) # -1 => unchanged
+            
             summaries = [tensor.unsqueeze(-1) for tensor in summaries] # add time dim for cat
-            patient_and_summaries = torch.cat([rearranged] + summaries, axis=-1)
+            
+            patient_and_summaries = torch.cat([rearranged, batch_static_vars] + summaries, axis=-1)
             # print("patient_and_summaries", patient_and_summaries.shape)
             
             atomics = self.layer_time_to_atomics(patient_and_summaries)
@@ -265,7 +274,7 @@ class CBM(nn.Module):
             # print("after flatten", flat.shape)
             
             # concat activation and summaries
-            atmomics_and_summaries = torch.cat([flat] + summaries, axis=-1)
+            atmomics_and_summaries = torch.cat([flat, batch_static_vars] + summaries, axis=-1)
             # print("atmomics_and_summaries", atmomics_and_summaries.shape)
             
             concepts = self.layer_to_concepts(atmomics_and_summaries)
@@ -458,14 +467,14 @@ class CBM(nn.Module):
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)
         
-        print("cutoff_percentage after", self.cutoff_percentage.round(decimals=3))
-        print("lower_thresholds after", self.lower_thresholds.round(decimals=3))
-        print("upper_thresholds after", self.upper_thresholds.round(decimals=3))
+        # print("cutoff_percentage after", self.cutoff_percentage.round(decimals=3))
+        # print("lower_thresholds after", self.lower_thresholds.round(decimals=3))
+        # print("upper_thresholds after", self.upper_thresholds.round(decimals=3))
         
         return self.val_losses[-1]
 
     def compute_loss(self, yb, y_pred, p_weight):
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
             task_loss = binary_cross_entropy_with_logits(y_pred, yb.float(), pos_weight = p_weight)
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             task_loss = cross_entropy(y_pred, yb, weight = p_weight)
@@ -486,7 +495,6 @@ class CBM(nn.Module):
             cos_sim = self.cos_sim(self.layer_to_concepts) + self.cos_sim(self.layer_time_to_atomics)
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
-        print(task_loss, l1_loss, cos_sim_loss)
         return task_loss + l1_loss + cos_sim_loss
 
     def cos_sim(self, layer):
@@ -500,32 +508,3 @@ class CBM(nn.Module):
         cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
         
         return cos_sim
-
-def plot_grad_flow(named_parameters):
-    '''Plots the gradients flowing through different layers in the net during training.
-    Can be used for checking for possible gradient vanishing / exploding problems.
-    
-    Usage: Plug this function in Trainer class after loss.backwards() as 
-    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
-    ave_grads = []
-    max_grads= []
-    layers = []
-    for n, p in named_parameters:
-        if(p.requires_grad): #and ("bias" not in n):
-            layers.append(n)
-            ave_grads.append(p.grad.abs().mean().cpu())
-            max_grads.append(p.grad.abs().max().cpu())
-    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-    plt.xlim(right=len(ave_grads)) # left=0, 
-    # plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-    plt.yscale("log")
-    plt.xlabel("Layers")
-    plt.ylabel("Gradient")
-    plt.title("Gradient flow")
-    plt.grid(True)
-    plt.legend([Line2D([0], [0], color="c", lw=4),
-                Line2D([0], [0], color="b", lw=4)], ['max-gradient', 'mean-gradient'])
-    plt.show()
