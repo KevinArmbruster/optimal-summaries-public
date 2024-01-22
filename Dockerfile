@@ -37,7 +37,7 @@ RUN pip install seaborn squarify imblearn
 RUN pip install optuna plotly kaleido
 RUN pip install aeon torchmetrics darts einops captum graphviz
 
-ENTRYPOINT ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["sleep", "infinity"]
 
 # SETUP INSTRUCTIONS
 # --build-arg USER_ID=$(id -u ${USER}) --build-arg GROUP_ID=$(id -g ${USER})
