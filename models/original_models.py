@@ -3,23 +3,23 @@ import sys
 sys.path.append('..')
 import numpy as np
 import pandas as pd
-import pickle
 import torch
 import csv
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
 from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 from models.custom_losses import LSTM_compound_loss, custom_bce_horseshoe
 from models.param_initializations import set_seed, init_cutoffs_to_zero, init_rand_lower_thresholds, init_rand_upper_thresholds
 from torchmetrics import AUROC, Accuracy, MeanSquaredError
-
 from sklearn.metrics import roc_auc_score
-from torch.utils.data import TensorDataset, DataLoader
+
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
 from models.differentiable_summaries import calculate_summaries
+from models.helper import plot_grad_flow
 
 from tqdm import tqdm
 from time import sleep
@@ -31,9 +31,6 @@ import random
 import time
 from enum import Enum
 from einops import rearrange
-
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
 
 class TaskType(Enum):
@@ -775,24 +772,27 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
 
 class CBM(nn.Module):
     def __init__(self, 
-                 input_dim, 
-                 changing_dim, 
-                 seq_len,
-                 num_concepts,
-                 differentiate_cutoffs = True,
-                 init_cutoffs_f = init_cutoffs_to_zero,
-                 init_lower_thresholds_f = init_rand_lower_thresholds, 
-                 init_upper_thresholds_f = init_rand_upper_thresholds,
-                 temperature = 0.1,
-                 opt_lr = 1e-4,
-                 opt_weight_decay = 0.,
-                 l1_lambda=0.,
-                 cos_sim_lambda=0.,
-                 top_k = '',
-                 top_k_num = 0,
-                 task_type = TaskType.CLASSIFICATION,
-                 output_dim = 2,
-                 device = 'cuda',
+                input_dim, 
+                changing_dim, 
+                seq_len,
+                num_concepts,
+                output_dim,
+                use_indicators,
+                use_fixes,
+                use_only_last_timestep,
+                differentiate_cutoffs = True,
+                init_cutoffs_f = init_cutoffs_to_zero,
+                init_lower_thresholds_f = init_rand_lower_thresholds, 
+                init_upper_thresholds_f = init_rand_upper_thresholds,
+                temperature = 0.1,
+                opt_lr = 1e-4,
+                opt_weight_decay = 0.,
+                l1_lambda=0.,
+                cos_sim_lambda=0.,
+                top_k = '',
+                top_k_num = 0,
+                task_type = TaskType.CLASSIFICATION,
+                device = 'cuda',
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
         
@@ -819,6 +819,10 @@ class CBM(nn.Module):
         self.seq_len = seq_len
         self.num_concepts = num_concepts
         
+        self.use_indicators = use_indicators
+        self.use_fixes = use_fixes
+        self.use_only_last_timestep = use_only_last_timestep
+        
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
         self.init_lower_thresholds_f = init_lower_thresholds_f
@@ -841,11 +845,11 @@ class CBM(nn.Module):
 
     
     def create_model(self):
-        self.sigmoid = nn.Sigmoid()
+        self.sigmoid_layer = nn.Sigmoid()
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
             self.output_af = nn.Sigmoid()
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             self.output_af = nn.Softmax(dim=1)
@@ -881,9 +885,9 @@ class CBM(nn.Module):
         
         # bottleneck layer
         # in B x T x V
-        self.bottleneck = nn.Linear(self.weight_parser.num_weights, self.num_concepts)
+        self.bottleneck = nn.LazyLinear(self.num_concepts) # self.weight_parser.num_weights
         # -> B x T x C
-                
+        
         # prediction task
         self.linear = nn.LazyLinear(self.output_dim)
         
@@ -913,10 +917,11 @@ class CBM(nn.Module):
     
     def forward(self, patient_batch, epsilon_denom=1e-8):
         # Encodes the patient_batch, then computes the forward.
-        batch_changing_vars, batch_measurement_inds, batch_static_vars, summaries, time_feats_2d = calculate_summaries(patient_batch, use_indicators, use_fixes, epsilon_denom)
-        cat = torch.cat((time_feats_2d, summaries), axis=1)
-        bottleneck = self.bottleneck(encoded)
-        activation = self.sigmoid(bottleneck)
+        batch_changing_vars, batch_measurement_inds, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, self.use_only_last_timestep, epsilon_denom)
+        cat = torch.cat([time_feats_2d] + summaries, axis=1)
+        # print(cat.shape, time_feats_2d.shape, len(summaries), summaries[0].shape)
+        bottleneck = self.bottleneck(cat)
+        activation = self.sigmoid_layer(bottleneck)
         return self.linear(activation)
     
     def forward_probabilities(self, patient_batch):
@@ -977,7 +982,7 @@ class CBM(nn.Module):
         
         return checkpoint.get("early_stopping", False)
 
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=20, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
+    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
         """
         
         Args:
@@ -1080,7 +1085,7 @@ class CBM(nn.Module):
         return self.val_losses[-1]
 
     def compute_loss(self, yb, y_pred, p_weight):                
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim < 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
             task_loss = binary_cross_entropy_with_logits(y_pred, yb.float(), pos_weight = p_weight)
         elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
             task_loss = cross_entropy(y_pred, yb, weight = p_weight)
@@ -1105,33 +1110,3 @@ class CBM(nn.Module):
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
         return task_loss + l1_loss + cos_sim_loss
-
-def plot_grad_flow(named_parameters):
-    '''Plots the gradients flowing through different layers in the net during training.
-    Can be used for checking for possible gradient vanishing / exploding problems.
-    
-    Usage: Plug this function in Trainer class after loss.backwards() as 
-    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
-    ave_grads = []
-    max_grads= []
-    layers = []
-    for n, p in named_parameters:
-        print(n, torch.isnan(p.grad).any())
-        if(p.requires_grad): #and ("bias" not in n):
-            layers.append(n)
-            ave_grads.append(p.grad.abs().mean().cpu())
-            max_grads.append(p.grad.abs().max().cpu())
-    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-    plt.xlim(right=len(ave_grads)) # left=0, 
-    # plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-    plt.yscale("log")
-    plt.xlabel("Layers")
-    plt.ylabel("Gradient")
-    plt.title("Gradient flow")
-    plt.grid(True)
-    plt.legend([Line2D([0], [0], color="c", lw=4),
-                Line2D([0], [0], color="b", lw=4)], ['max-gradient', 'mean-gradient'])
-    plt.show()
