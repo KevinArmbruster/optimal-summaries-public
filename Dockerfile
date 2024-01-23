@@ -42,4 +42,4 @@ ENTRYPOINT ["sleep", "infinity"]
 # SETUP INSTRUCTIONS
 # --build-arg USER_ID=$(id -u ${USER}) --build-arg GROUP_ID=$(id -g ${USER})
 # docker build -t optimal-summaries-env .
-# docker run --gpus all --pid=host -v /home/ml-stud-karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
+# docker run --gpus all --ipc=host -v /home/ml-stud-karmbruster/mimic-iii/data:/workdir/data/mimic-iii -d optimal-summaries-env
