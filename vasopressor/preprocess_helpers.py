@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
-import pickle
+import torch
+from torch.utils.data import TensorDataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 
 changing_vars = [
  'dbp',
@@ -31,92 +34,71 @@ changing_vars = [
  'inr',
  'hgb',
  'bilirubin_total']
-
-def preprocess_MIMIC_data(x_filepath, y_filepath, y_2d=True):
-    """
-    Returns pre-processed numpy arrays X and y after re-ordering columns
-    from pickled Dataframe arrays x_filepath and y_filepath.
     
-    Current script only includes first 24 time-steps.
-    
-    Args:
-        x_filepath: file path to pickled array of covariate data.
-        y_filepath: file path to pickled array of target data.
-        y_2d: boolean equal to true if targets should be returned as a 2D array.
-    """
-    
-    X = pickle.load( open(x_filepath, "rb" ) )
-    Y = pickle.load( open(y_filepath, "rb" ) )
-    
-    # Drop all the GCS variables that are not the sum.
-    GCS_other = ['GCS_eye',
-           'GCS_eye_ind', 'GCS_motor', 'GCS_motor_ind', 'GCS_verbal',
-           'GCS_verbal_ind']
-
-    data_cols = changing_vars.copy()
-    
-    # The next cols are the same data missingness indicators
-    for c in changing_vars:
-        data_cols.append(c + '_ind')
-        
-    for c in X[0].columns:
-        if c not in data_cols and c not in GCS_other:
-            data_cols.append(c)
-            
-    X_np = []
-    Y_new = []
-
-    # X_np will have the first 6 hours of data for all patient series.
-
-    for i in range(len(X)):
-        pat = X[i].reindex(columns=data_cols)
-        y = Y[i]
-        pat_arr = np.array(pat)
-
-        if pat_arr.shape[0] > 6:
-            # use the first 6 hours of data
-            X_np.append(np.array(pat)[:6])
-            Y_new.append(y[0])
-
-    Y = Y_new.copy()
-    X_np = np.array(X_np)
-    
-    if not y_2d:
-        return X_np, y
-    
-    # create Y_logits
-    Y_logits = []
-
-    for y in Y:
-        if y == 0:
-            Y_logits.append([1, 0])
-        else:
-            Y_logits.append([0, 1])
-            
-    return X_np, Y_logits, changing_vars, data_cols
-
-
-def inverse_feature_preprocessing(x, feat_name):
-    """
-    Returns the feature x when transformed back into its original 
-    representation space by "undo"ing its pre-processing.
-    
-    Args:
-        x (float): the quantity to be transformed
-        feat_name (str): the name of the feature to be transformed
-    """
-    # Load mean and variance arrays.
-    mu_dict = pickle.load( open( "data/mu_dict_vasopressor_LOS_6_600.p", "rb" ) )
-    var_dict = pickle.load( open( "data/var_dict_vasopressor_LOS_6_600.p", "rb" ) ) 
-    
-    mu = mu_dict[feat_name]
-    var = var_dict[feat_name]
-    
-    return var * x + mu
-    
-def myPreprocessed():
-    X = np.load("/workdir/data/mimic-iii/vasopressor-Xdata.npy")
+def load_MIMIC_data():
+    X_time = np.load("/workdir/data/mimic-iii/vasopressor-X_time.npy")
+    X_ind = np.load("/workdir/data/mimic-iii/vasopressor-X_ind.npy")
+    X_static = np.load("/workdir/data/mimic-iii/vasopressor-X_static.npy")
     y = np.load("/workdir/data/mimic-iii/vasopressor-Ylogits.npy")
     column_names = np.load("/workdir/data/mimic-iii/vasopressor-column_names.npy", allow_pickle=True)
     static_names = list(column_names[-8:])
-    return X, y, changing_vars, static_names
+    return X_time, X_ind, X_static, y, changing_vars, static_names
+
+def create_MIMIC_datasets(X_time, X_ind, X_static, _Y_logits, output_dim = 2, batch_size = 512, random_state = 1):
+    
+    # ## target
+    y = _Y_logits
+    if output_dim == 1:
+        y = _Y_logits[:, 1, None]
+    
+    y_unique = np.unique(y)
+    num_classes = len(y_unique)
+    
+    # # class weights
+    class_weights = compute_class_weight(class_weight="balanced", classes=y_unique, y=_Y_logits[:, 1])
+    class_weights = torch.tensor(class_weights)
+    
+    if output_dim == 1:
+        class_weights = class_weights[1]/class_weights[0] # == pos / neg   # get ONLY positive sample weights
+    
+    
+    # split 60/20/20 %    
+    X_time_train, X_time_test, X_ind_train, X_ind_test, X_static_train, X_static_test, y_train, y_test = train_test_split(X_time, X_ind, X_static, y, test_size = 0.40, random_state = random_state, stratify = y)
+    X_time_test, X_time_val, X_ind_test, X_ind_val, X_static_test, X_static_val, y_test, y_val = train_test_split(X_time_test, X_ind_test, X_static_test, y_test, test_size = 0.50, random_state = random_state, stratify = y_test)
+
+
+    # Datasets
+    X_time_train = torch.tensor(X_time_train, dtype=torch.float32)
+    X_ind_train = torch.tensor(X_ind_train, dtype=torch.float32)
+    X_static_train = torch.tensor(X_static_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train)
+
+    X_time_val = torch.tensor(X_time_val, dtype=torch.float32)
+    X_ind_val = torch.tensor(X_ind_val, dtype=torch.float32)
+    X_static_val = torch.tensor(X_static_val, dtype=torch.float32)
+    y_val = torch.tensor(y_val)
+
+    X_time_test = torch.tensor(X_time_test, dtype=torch.float32)
+    X_ind_test = torch.tensor(X_ind_test, dtype=torch.float32)
+    X_static_test = torch.tensor(X_static_test, dtype=torch.float32)
+    y_test = torch.tensor(y_test)
+    
+    
+    # Dataloaders
+    train_dataset = TensorDataset(X_time_train, X_ind_train, X_static_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
+
+    val_dataset = TensorDataset(X_time_val, X_ind_val, X_static_val, y_val)
+    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+
+    test_dataset = TensorDataset(X_time_test, X_ind_test, X_static_test, y_test)
+    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+    
+    return train_loader, val_loader, test_loader, class_weights, num_classes
+
+def load_and_create_MIMIC_dataloader(output_dim = 2, batch_size = 512, random_state = 1):
+    X_time, X_ind, X_static, Y_logits, changing_vars, static_names = load_MIMIC_data()
+    seq_len = X_time.shape[1]
+    train_loader, val_loader, test_loader, class_weights, num_classes = create_MIMIC_datasets(X_time, X_ind, X_static, Y_logits, output_dim, batch_size, random_state)
+    return train_loader, val_loader, test_loader, class_weights, num_classes, changing_vars, static_names, seq_len
+    

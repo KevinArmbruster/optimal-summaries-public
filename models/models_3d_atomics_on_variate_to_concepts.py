@@ -13,7 +13,7 @@ from models.param_initializations import *
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
 from models.differentiable_summaries import calculate_summaries
-from models.helper import plot_grad_flow
+from models.helper import plot_grad_flow, extract_to
 
 from tqdm import tqdm
 from time import sleep
@@ -70,8 +70,8 @@ def create_state_dict(self, epoch):
 
 
 class CBM(nn.Module):
-    def __init__(self, 
-                input_dim, 
+    def __init__(self,
+                static_dim,
                 changing_dim, 
                 seq_len,
                 num_atomics,
@@ -115,9 +115,8 @@ class CBM(nn.Module):
         """
         super(CBM, self).__init__()
         
-        self.input_dim = input_dim
+        self.static_dim = static_dim
         self.changing_dim = changing_dim
-        self.static_dim = input_dim - 2 * changing_dim
         self.seq_len = seq_len
         self.num_concepts = num_concepts
         self.num_atomics = num_atomics
@@ -195,7 +194,6 @@ class CBM(nn.Module):
         if self.use_summaries_for_atomics:
             # concat summaries to patient_batch during forward
             # in B x V x (T + Summaries)
-            T_and_summaries = 2 * self.seq_len + self.num_summaries
             self.layer_time_to_atomics = nn.LazyLinear(self.num_atomics) # in T_and_summaries
             # -> B x V x A
             self.flatten = nn.Flatten()
@@ -240,25 +238,28 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def forward(self, patient_batch, epsilon_denom=1e-8):
-        assert patient_batch.size()[1:] == (self.seq_len, self.input_dim) # assert size, ignore batch dim
+    def forward(self, time_dependent_vars, indicators, static_vars):
+        assert time_dependent_vars.dim() == 3 and time_dependent_vars.size(1) == self.seq_len and time_dependent_vars.size(2) == self.changing_dim
+        assert indicators.shape == time_dependent_vars.shape
+        assert torch.equal(static_vars, torch.empty(0, device=self.device)) or (static_vars.dim() == 2 and static_vars.size(1) == self.static_dim)
         
-        batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, False, epsilon_denom)
+        summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
         
         if self.use_indicators:
-            cat = torch.cat([batch_changing_vars, batch_measurement_indicators], axis=1) # cat along time instead of var
+            cat = torch.cat([time_dependent_vars, indicators], axis=1) # cat along time instead of var
         else:
-            cat = batch_changing_vars
+            cat = time_dependent_vars
         rearranged = rearrange(cat, "b t v -> b v t")
         
         if self.use_summaries_for_atomics:
-            # static vars are concatinated along time, for each var, similar to summaries
-            batch_static_vars = batch_static_vars.unsqueeze(1) # b x 1 x 8
-            batch_static_vars = batch_static_vars.expand(-1, rearranged.size(1), -1) # -1 => unchanged
+            if not torch.equal(static_vars, torch.empty(0, device=self.device)):
+                # static vars are concatinated along time, for each var, similar to summaries
+                static_vars = static_vars.unsqueeze(1) # b x 1 x 8
+                static_vars = static_vars.expand(-1, rearranged.size(1), -1) # -1 => unchanged
             
             summaries = [tensor.unsqueeze(-1) for tensor in summaries] # add time dim for cat
             
-            patient_and_summaries = torch.cat([rearranged, batch_static_vars] + summaries, axis=-1)
+            patient_and_summaries = torch.cat([rearranged, static_vars] + summaries, axis=-1)
             # print("patient_and_summaries", patient_and_summaries.shape)
             
             atomics = self.layer_time_to_atomics(patient_and_summaries)
@@ -279,7 +280,7 @@ class CBM(nn.Module):
             # print("after flatten", flat.shape)
             
             # concat activation and summaries
-            atmomics_and_summaries = torch.cat([flat, batch_static_vars] + summaries, axis=-1)
+            atmomics_and_summaries = torch.cat([flat, static_vars] + summaries, axis=-1)
             # print("atmomics_and_summaries", atmomics_and_summaries.shape)
             
             concepts = self.layer_to_concepts(atmomics_and_summaries)
@@ -289,28 +290,29 @@ class CBM(nn.Module):
         out = self.layer_output(concepts)
         return out
     
-    def forward_probabilities(self, patient_batch):
-        output = self(patient_batch)
+    def forward_probabilities(self, *data):
+        output = self(*data)
         return self.output_af(output)
     
-    def predict(self, patient_batch):
-        probs = self.forward_probabilities(patient_batch)
+    def predict(self, *data):
+        probs = self.forward_probabilities(*data)
         return torch.argmax(probs, dim=1)
     
-    def forward_one_step_ahead(self, patient_batch, steps_ahead):
+    def forward_one_step_ahead(self, *data, steps_ahead):
         predictions = []
-        input = patient_batch # b t v
+        time_dependent_vars, indicators, static_vars = data # b t v
         
         for _ in range(steps_ahead):
-            output = self(input) # b x v
-            predictions.append(output.unsqueeze(1))
+            output = self(time_dependent_vars, indicators, static_vars) # b x v
+            output = output.unsqueeze(1) # inflate to 3d
+            predictions.append(output)
             
-            # add indicators and inflate to 3d
+            # create indicators
             ind = torch.isfinite(output)
-            tmp = torch.cat([output, ind], axis=1)
-            tmp = tmp.unsqueeze(1)
             
-            input = torch.cat([input[:, 1:, :], tmp], dim=1)
+            # replace previous first with new last entry, to maintain seq length
+            time_dependent_vars = torch.cat([time_dependent_vars[:, 1:, :], output], dim=1)
+            indicators = torch.cat([indicators[:, 1:, :], ind], dim=1)
         
         return torch.cat(predictions, axis=1)
     
@@ -366,7 +368,6 @@ class CBM(nn.Module):
 
     def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, warmup_epochs=0, scheduler=None, trial=None, show_grad=False):
         """
-        
         Args:
             train_loader (torch.DataLoader): 
             val_tensor (torch.DataLoader):
@@ -397,13 +398,15 @@ class CBM(nn.Module):
                 train_loss = 0
             
                 ### Train loop
-                for Xb, yb in train_loader:
-                    Xb, yb = Xb.to(self.device), yb.to(self.device)
+                for batch in train_loader:
+                    X_time, X_ind, X_static, y = extract_to(batch, self.device)
+                    
                     if self.noise_std:
-                        Xb = Xb + torch.normal(mean=0, std=self.noise_std, size=Xb.shape).to(device=self.device)
-                    y_pred = self(Xb)
+                        X_time = X_time + torch.normal(mean=0, std=self.noise_std, size=X_time.shape).to(device=self.device)
+                        
+                    y_pred = self(X_time, X_ind, X_static)
 
-                    loss = self.compute_loss(yb, y_pred, p_weight)
+                    loss = self.compute_loss(y, y_pred, p_weight)
                     
                     self.optimizer.zero_grad(set_to_none=True)
                     loss.backward()
@@ -411,7 +414,7 @@ class CBM(nn.Module):
                     if self.use_grad_norm:
                         self.normalize_gradient_(self.parameters(), self.use_grad_norm)
 
-                    train_loss += loss * Xb.size(0)
+                    train_loss += loss * X_time.size(0)
                     
                     
                     for name, param in self.named_parameters():
@@ -439,12 +442,12 @@ class CBM(nn.Module):
                         
                         ### Validation loop
                         val_loss = 0
-                        for Xb, yb in val_loader:
-                            Xb, yb = Xb.to(self.device), yb.to(self.device)
+                        for batch in val_loader:
+                            X_time, X_ind, X_static, y = extract_to(batch, self.device)
                             
-                            y_pred = self(Xb)
+                            y_pred = self(X_time, X_ind, X_static)
 
-                            val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
+                            val_loss += self.compute_loss(y, y_pred, p_weight) * X_time.size(0)
                         
                         val_loss = val_loss / len(val_loader.sampler)
                         self.val_losses.append(val_loss.item())

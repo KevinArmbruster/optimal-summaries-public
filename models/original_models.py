@@ -19,7 +19,7 @@ from sklearn.metrics import roc_auc_score
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
 from models.differentiable_summaries import calculate_summaries
-from models.helper import plot_grad_flow
+from models.helper import plot_grad_flow, extract_to
 
 from tqdm import tqdm
 from time import sleep
@@ -772,7 +772,7 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
 
 class CBM(nn.Module):
     def __init__(self, 
-                input_dim, 
+                static_dim, 
                 changing_dim, 
                 seq_len,
                 num_concepts,
@@ -815,9 +815,8 @@ class CBM(nn.Module):
         """
         super(CBM, self).__init__()
         
-        self.input_dim = input_dim
+        self.static_dim = static_dim
         self.changing_dim = changing_dim
-        self.static_dim = input_dim - 2 * changing_dim
         self.seq_len = seq_len
         self.num_concepts = num_concepts
         
@@ -919,39 +918,44 @@ class CBM(nn.Module):
             self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
         return
     
-    def forward(self, patient_batch, epsilon_denom=1e-8):
-        assert patient_batch.size()[1:] == (self.seq_len, self.input_dim) # assert size, ignore batch dim
+    def forward(self, time_dependent_vars, indicators, static_vars):
+        assert time_dependent_vars.dim() == 3 and time_dependent_vars.size(1) == self.seq_len and time_dependent_vars.size(2) == self.changing_dim
+        assert indicators.shape == time_dependent_vars.shape
+        assert torch.equal(static_vars, torch.empty(0, device=self.device)) or (static_vars.dim() == 2 and static_vars.size(1) == self.static_dim)
         
         # Encodes the patient_batch, then computes the forward.
-        batch_changing_vars, batch_measurement_inds, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, self.use_only_last_timestep, epsilon_denom)
+        summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
+        time_feats_2d = self.get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+        
         cat = torch.cat([time_feats_2d] + summaries, axis=1)
-        # print(cat.shape, time_feats_2d.shape, len(summaries), summaries[0].shape)
+        # print("self.use_indicators", self.use_indicators, cat.shape, time_feats_2d.shape, len(summaries), summaries[0].shape)
         bottleneck = self.bottleneck(cat)
         activation = self.sigmoid_layer(bottleneck)
         return self.linear(activation)
     
-    def forward_probabilities(self, patient_batch):
-        output = self(patient_batch)
+    def forward_probabilities(self, *data):
+        output = self(*data)
         return self.output_af(output)
     
-    def predict(self, patient_batch):
-        probs = self.forward_probabilities(patient_batch)
+    def predict(self, *data):
+        probs = self.forward_probabilities(*data)
         return torch.argmax(probs, dim=1)
     
-    def forward_one_step_ahead(self, patient_batch, steps_ahead):
+    def forward_one_step_ahead(self, *data, steps_ahead):
         predictions = []
-        input = patient_batch # b t v
+        time_dependent_vars, indicators, static_vars = data # b t v
         
         for _ in range(steps_ahead):
-            output = self(input) # b x v
-            predictions.append(output.unsqueeze(1))
+            output = self(time_dependent_vars, indicators, static_vars) # b x v
+            output = output.unsqueeze(1) # inflate to 3d
+            predictions.append(output)
             
-            # add indicators and inflate to 3d
+            # create indicators
             ind = torch.isfinite(output)
-            tmp = torch.cat([output, ind], axis=1)
-            tmp = tmp.unsqueeze(1)
             
-            input = torch.cat([input[:, 1:, :], tmp], dim=1)
+            # replace previous first with new last entry, to maintain seq length
+            time_dependent_vars = torch.cat([time_dependent_vars[:, 1:, :], output], dim=1)
+            indicators = torch.cat([indicators[:, 1:, :], ind], dim=1)
         
         return torch.cat(predictions, axis=1)
     
@@ -1033,17 +1037,19 @@ class CBM(nn.Module):
             self.train()
             train_loss = 0
             
-            for batch_idx, (Xb, yb) in enumerate(train_loader):
-                Xb, yb = Xb.to(self.device), yb.to(self.device)
+            for batch in train_loader:
+                X_time, X_ind, X_static, y = extract_to(batch, self.device)
+                
                 if self.noise_std:
-                    Xb = Xb + torch.normal(mean=0, std=self.noise_std, size=Xb.shape).to(device=self.device)
-                y_pred = self(Xb)
+                    X_time = X_time + torch.normal(mean=0, std=self.noise_std, size=X_time.shape).to(device=self.device)
+                
+                y_pred = self(X_time, X_ind, X_static)
 
-                loss = self.compute_loss(yb, y_pred, p_weight)
+                loss = self.compute_loss(y, y_pred, p_weight)
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                train_loss += loss * Xb.size(0)
+                train_loss += loss * X_time.size(0)
                 
                 if self.use_grad_norm:
                     self.normalize_gradient_(self.parameters(), self.use_grad_norm)
@@ -1073,13 +1079,13 @@ class CBM(nn.Module):
                     
                     # Calculate validation set loss
                     val_loss = 0
-                    for batch_idx, (Xb, yb) in enumerate(val_loader):
-                        Xb, yb = Xb.to(self.device), yb.to(self.device)
-            
-                        # Forward pass.
-                        y_pred = self(Xb)
+                    for batch in val_loader:
+                        X_time, X_ind, X_static, y = extract_to(batch, self.device)
 
-                        val_loss += self.compute_loss(yb, y_pred, p_weight) * Xb.size(0)
+                        # Forward pass.
+                        y_pred = self(X_time, X_ind, X_static)
+
+                        val_loss += self.compute_loss(y, y_pred, p_weight) * X_time.size(0)
                     
                     val_loss = val_loss / len(val_loader.sampler)
                     self.val_losses.append(val_loss.item())
@@ -1153,3 +1159,25 @@ class CBM(nn.Module):
         cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
         
         return cos_sim
+
+    def get_time_feat_2d(self, time_dependent_vars, indicators, static_vars, use_only_last_timestep, use_indicators):
+        if use_only_last_timestep:
+            time_feats_2d = time_dependent_vars[:, self.seq_len-1, :]
+            
+            if use_indicators:
+                ind2d = indicators[:, self.seq_len-1, :]
+                time_feats_2d = torch.cat((time_feats_2d, ind2d), dim=-1)
+                
+            time_feats_2d = torch.cat((time_feats_2d, static_vars), dim=-1)
+        else:
+            # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
+            time_feats_2d = time_dependent_vars.reshape(time_dependent_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
+            
+            if use_indicators:
+                indicators_2d = indicators.reshape(indicators.shape[0], -1)
+                time_feats_2d = torch.cat((time_feats_2d, indicators_2d), dim=1)
+            
+            time_feats_2d = torch.cat((time_feats_2d, static_vars), dim=1)
+        
+        return time_feats_2d
+    

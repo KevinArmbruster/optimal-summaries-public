@@ -66,3 +66,12 @@ def plot_grad_flow(named_parameters):
                 Line2D([0], [0], color="b", lw=4)], ['max-gradient', 'mean-gradient'])
     plt.show()
 
+
+def extract_to(batch, device):
+    if len(batch) == 3:
+        X_time, X_ind, y = [tensor.to(device=device) for tensor in batch]
+        X_static = torch.empty(0, device=device)
+    else:
+        X_time, X_ind, X_static, y = [tensor.to(device=device) for tensor in batch]
+    
+    return X_time, X_ind, X_static, y
