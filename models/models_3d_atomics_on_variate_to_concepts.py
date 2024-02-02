@@ -8,7 +8,7 @@ import csv
 
 import torch
 import torch.nn as nn
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
+from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity, normalize
 from models.param_initializations import *
 from models.EarlyStopping import EarlyStopping
 from models.weights_parser import WeightsParser
@@ -80,6 +80,8 @@ class CBM(nn.Module):
                 use_summaries_for_atomics,
                 use_indicators,
                 use_fixes,
+                use_grad_norm,
+                noise_std,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_50perc,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
@@ -124,6 +126,8 @@ class CBM(nn.Module):
         self.use_summaries_for_atomics = use_summaries_for_atomics
         self.use_indicators = use_indicators
         self.use_fixes = use_fixes
+        self.use_grad_norm = use_grad_norm
+        self.noise_std = noise_std
         
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
@@ -237,6 +241,7 @@ class CBM(nn.Module):
         return
     
     def forward(self, patient_batch, epsilon_denom=1e-8):
+        assert patient_batch.size()[1:] == (self.seq_len, self.input_dim) # assert size, ignore batch dim
         
         batch_changing_vars, batch_measurement_indicators, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, False, epsilon_denom)
         
@@ -298,7 +303,7 @@ class CBM(nn.Module):
         
         for _ in range(steps_ahead):
             output = self(input) # b x v
-            predictions.append(output)
+            predictions.append(output.unsqueeze(1))
             
             # add indicators and inflate to 3d
             ind = torch.isfinite(output)
@@ -394,12 +399,18 @@ class CBM(nn.Module):
                 ### Train loop
                 for Xb, yb in train_loader:
                     Xb, yb = Xb.to(self.device), yb.to(self.device)
+                    if self.noise_std:
+                        Xb = Xb + torch.normal(mean=0, std=self.noise_std, size=Xb.shape).to(device=self.device)
                     y_pred = self(Xb)
-                    
+
                     loss = self.compute_loss(yb, y_pred, p_weight)
                     
                     self.optimizer.zero_grad(set_to_none=True)
                     loss.backward()
+                    
+                    if self.use_grad_norm:
+                        self.normalize_gradient_(self.parameters(), self.use_grad_norm)
+
                     train_loss += loss * Xb.size(0)
                     
                     
@@ -472,6 +483,15 @@ class CBM(nn.Module):
         # print("upper_thresholds after", self.upper_thresholds.round(decimals=3))
         
         return self.val_losses[-1]
+    
+    def normalize_gradient_(self, params, norm_type, p_norm_type=2):
+        for param in params:
+            if norm_type == "FULL" or torch.squeeze(param.grad).dim() < 2:
+                param.grad = normalize(param.grad, p=p_norm_type, dim=None)
+            elif norm_type == "COMPONENT_WISE":
+                param.grad = normalize(param.grad, p=p_norm_type, dim=0)
+            
+        return
 
     def compute_loss(self, yb, y_pred, p_weight):
         if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
@@ -502,9 +522,9 @@ class CBM(nn.Module):
             return 0
         
         concepts = torch.arange(layer.out_features, device=self.device)
-        indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
+        indices = torch.combinations(concepts, 2)
         
-        weights = layer.weight[indices]  # Extract corresponding weight vectors
+        weights = layer.weight[indices]
         cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
         
         return cos_sim

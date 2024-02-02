@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
+from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity, normalize
 from models.custom_losses import LSTM_compound_loss, custom_bce_horseshoe
 from models.param_initializations import set_seed, init_cutoffs_to_zero, init_rand_lower_thresholds, init_rand_upper_thresholds
 from torchmetrics import AUROC, Accuracy, MeanSquaredError
@@ -780,6 +780,8 @@ class CBM(nn.Module):
                 use_indicators,
                 use_fixes,
                 use_only_last_timestep,
+                use_grad_norm,
+                noise_std,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_zero,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
@@ -822,6 +824,8 @@ class CBM(nn.Module):
         self.use_indicators = use_indicators
         self.use_fixes = use_fixes
         self.use_only_last_timestep = use_only_last_timestep
+        self.use_grad_norm = use_grad_norm
+        self.noise_std = noise_std
         
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
@@ -916,6 +920,8 @@ class CBM(nn.Module):
         return
     
     def forward(self, patient_batch, epsilon_denom=1e-8):
+        assert patient_batch.size()[1:] == (self.seq_len, self.input_dim) # assert size, ignore batch dim
+        
         # Encodes the patient_batch, then computes the forward.
         batch_changing_vars, batch_measurement_inds, batch_static_vars, summaries, time_feats_2d = calculate_summaries(self, patient_batch, self.use_indicators, self.use_fixes, self.use_only_last_timestep, epsilon_denom)
         cat = torch.cat([time_feats_2d] + summaries, axis=1)
@@ -931,6 +937,23 @@ class CBM(nn.Module):
     def predict(self, patient_batch):
         probs = self.forward_probabilities(patient_batch)
         return torch.argmax(probs, dim=1)
+    
+    def forward_one_step_ahead(self, patient_batch, steps_ahead):
+        predictions = []
+        input = patient_batch # b t v
+        
+        for _ in range(steps_ahead):
+            output = self(input) # b x v
+            predictions.append(output.unsqueeze(1))
+            
+            # add indicators and inflate to 3d
+            ind = torch.isfinite(output)
+            tmp = torch.cat([output, ind], axis=1)
+            tmp = tmp.unsqueeze(1)
+            
+            input = torch.cat([input[:, 1:, :], tmp], dim=1)
+        
+        return torch.cat(predictions, axis=1)
     
     def get_num_concepts(self):
         return self.num_concepts
@@ -1012,6 +1035,8 @@ class CBM(nn.Module):
             
             for batch_idx, (Xb, yb) in enumerate(train_loader):
                 Xb, yb = Xb.to(self.device), yb.to(self.device)
+                if self.noise_std:
+                    Xb = Xb + torch.normal(mean=0, std=self.noise_std, size=Xb.shape).to(device=self.device)
                 y_pred = self(Xb)
 
                 loss = self.compute_loss(yb, y_pred, p_weight)
@@ -1020,6 +1045,8 @@ class CBM(nn.Module):
                 loss.backward()
                 train_loss += loss * Xb.size(0)
                 
+                if self.use_grad_norm:
+                    self.normalize_gradient_(self.parameters(), self.use_grad_norm)
                 
                 for name, param in self.named_parameters():
                     isnan = param.grad is None or torch.isnan(param.grad).any()
@@ -1084,6 +1111,15 @@ class CBM(nn.Module):
         
         return self.val_losses[-1]
 
+    def normalize_gradient_(self, params, norm_type, p_norm_type=2):
+        for param in params:
+            if norm_type == "FULL" or torch.squeeze(param.grad).dim() < 2:
+                param.grad = normalize(param.grad, p=p_norm_type, dim=None)
+            elif norm_type == "COMPONENT_WISE":
+                param.grad = normalize(param.grad, p=p_norm_type, dim=0)
+            
+        return
+    
     def compute_loss(self, yb, y_pred, p_weight):                
         if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
             task_loss = binary_cross_entropy_with_logits(y_pred, yb.float(), pos_weight = p_weight)
@@ -1100,13 +1136,20 @@ class CBM(nn.Module):
         
         # Cosine_similarity regularization
         cos_sim_loss = 0
-        if self.num_concepts != 1:
-            concepts = torch.arange(self.num_concepts, device=self.device)
-            indices = torch.combinations(concepts, 2)  # Generate all combinations of concept indices
-
-            weights = self.bottleneck.weight[indices]  # Extract corresponding weight vectors
-            cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
-            
+        if self.cos_sim_lambda != 0:
+            cos_sim = self.cos_sim(self.bottleneck)
             cos_sim_loss = self.cos_sim_lambda * cos_sim
         
         return task_loss + l1_loss + cos_sim_loss
+
+    def cos_sim(self, layer):
+        if layer.out_features == 1:
+            return 0
+        
+        concepts = torch.arange(layer.out_features, device=self.device)
+        indices = torch.combinations(concepts, 2)
+        
+        weights = layer.weight[indices]
+        cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
+        
+        return cos_sim
