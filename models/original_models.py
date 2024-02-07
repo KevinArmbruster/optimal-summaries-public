@@ -769,6 +769,36 @@ class LogisticRegressionWithSummaries_Wrapper(nn.Module):
         
             rtpt.step(subtitle=f"loss={loss:2.2f}")
 
+class MultiplicativeInteractionLayer(nn.Module):
+    def __init__(self, in_features, in_features2, out_features):
+        super(MultiplicativeInteractionLayer, self).__init__()
+
+        self.bilinear = nn.Bilinear(in_features, in_features2, out_features)
+        self.linear1 = nn.Linear(in_features, out_features, bias=False)
+        self.linear2 = nn.Linear(in_features2, out_features, bias=False)
+
+    def forward(self, x, z):
+        output = self.bilinear(x, z) + self.linear1(x) + self.linear2(z)
+        return output
+
+class SelfAttention(nn.Module):
+    def __init__(self, input_dim):
+        super(SelfAttention, self).__init__()
+        self.input_dim = input_dim
+        self.query = nn.Linear(input_dim, input_dim)
+        self.key = nn.Linear(input_dim, input_dim)
+        self.value = nn.Linear(input_dim, input_dim)
+        self.softmax = nn.Softmax(dim=2)
+
+    def forward(self, x): # needs 3d mat, b t v
+        queries = self.query(x)
+        keys = self.key(x)
+        values = self.value(x)
+        scores = torch.bmm(queries, keys.transpose(1, 2)) / (self.input_dim ** 0.5)
+        attention = self.softmax(scores)
+        weighted = torch.bmm(attention, values)
+        # print("SA weighted, out:", weighted.shape, "in:", x.shape)
+        return weighted
 
 class CBM(nn.Module):
     def __init__(self, 
@@ -782,6 +812,8 @@ class CBM(nn.Module):
                 use_only_last_timestep,
                 use_grad_norm,
                 noise_std,
+                use_multiplicative_interactions,
+                use_summaries,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_zero,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
@@ -819,12 +851,15 @@ class CBM(nn.Module):
         self.changing_dim = changing_dim
         self.seq_len = seq_len
         self.num_concepts = num_concepts
+        self.num_summaries = 12 # number of calculated summaries
         
         self.use_indicators = use_indicators
         self.use_fixes = use_fixes
         self.use_only_last_timestep = use_only_last_timestep
         self.use_grad_norm = use_grad_norm
         self.noise_std = noise_std
+        self.use_multiplicative_interactions = use_multiplicative_interactions
+        self.use_summaries = use_summaries
         
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
@@ -888,7 +923,17 @@ class CBM(nn.Module):
         
         # bottleneck layer
         # in B x T x V
-        self.bottleneck = nn.LazyLinear(self.num_concepts) # self.weight_parser.num_weights
+        if self.use_multiplicative_interactions == "MI":
+            dim = self.changing_dim * self.seq_len * 2 + self.static_dim + self.num_summaries * self.changing_dim
+            self.bottleneck = MultiplicativeInteractionLayer(dim, dim, self.num_concepts)
+            
+        elif self.use_multiplicative_interactions == "SA":
+            self._self_attention = SelfAttention(2 * self.seq_len + self.num_summaries + self.static_dim)
+            self._linear = nn.LazyLinear(self.num_concepts)
+            self.bottleneck = nn.Sequential(self._self_attention, nn.Flatten(), self._linear)
+            
+        else:
+            self.bottleneck = nn.LazyLinear(self.num_concepts) # self.weight_parser.num_weights
         # -> B x T x C
         
         # prediction task
@@ -902,20 +947,25 @@ class CBM(nn.Module):
             file = open(self.top_k)
             csvreader = csv.reader(file)
             header = next(csvreader)
-            top_k_inds = []
+            
             top_k_concepts = []
+            top_k_inds = []
             i = 0
+                        
             for row in csvreader:
                 if (i <self.top_k_num):
-                    top_k_inds.append(int(row[2]))
-                    top_k_concepts.append(int(row[1]))
+                    top_k_concepts.append(int(row[2]))
+                    top_k_inds.append(int(row[3]))
                     i+=1
                 else:
                     break
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool) #device=self.device # during init still on cpu
+            
+            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool)
+            
             for i in range(len(top_k_inds)):
-                condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
+                condition[top_k_concepts[i]][top_k_inds[i]] = True
+                
+            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0)))
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
@@ -925,11 +975,51 @@ class CBM(nn.Module):
         
         # Encodes the patient_batch, then computes the forward.
         summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
-        time_feats_2d = self.get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
         
-        cat = torch.cat([time_feats_2d] + summaries, axis=1)
-        # print("self.use_indicators", self.use_indicators, cat.shape, time_feats_2d.shape, len(summaries), summaries[0].shape)
-        bottleneck = self.bottleneck(cat)
+        if self.use_multiplicative_interactions == "MI":
+            cat = self.get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+            cat = torch.cat([cat] + summaries, axis=1)
+            
+            # print("cat", cat.shape, summaries[0].shape, len(summaries))
+            # time2d = time_dependent_vars.reshape(time_dependent_vars.shape[0], -1)
+            # ind2d = indicators.reshape(indicators.shape[0], -1)
+            # summaries = torch.cat(summaries, axis=1).squeeze()
+            
+            bottleneck = self.bottleneck(cat, cat)
+            
+        elif self.use_multiplicative_interactions == "SA":
+            summaries = [tensor.unsqueeze(-1) for tensor in summaries] # add time dim for cat
+            # cat = self.get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+            
+            if self.use_indicators:
+                cat = torch.cat([time_dependent_vars, indicators], axis=1) # cat along time instead of var
+            else:
+                cat = time_dependent_vars
+            rearranged = rearrange(cat, "b t v -> b v t")
+            
+            if not torch.equal(static_vars, torch.empty(0, device=self.device)):
+                # static vars are concatinated along time, for each var, similar to summaries
+                static_vars = static_vars.unsqueeze(1) # b x 1 x 8
+                static_vars = static_vars.expand(-1, rearranged.size(1), -1) # -1 => unchanged
+            
+            cat = torch.cat([rearranged, static_vars] + summaries, axis=-1)
+            # cat = rearrange(cat, "b v t -> b t v")
+            
+            # print("SA shapes", cat.shape, rearranged.shape, static_vars.shape, len(summaries), summaries[0].shape)
+            # SA shapes torch.Size([512, 27, 32])   torch.Size([512, 27, 12])   torch.Size([512, 27, 8])   12 x torch.Size([512, 27, 1]) == 27x12
+            
+            bottleneck = self.bottleneck(cat)
+            
+        else:
+            time_feats_2d = self.get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+            
+            if self.use_summaries:
+                cat = torch.cat([time_feats_2d] + summaries, axis=1)
+            else:
+                cat = time_feats_2d
+            # print("self.use_indicators", self.use_indicators, cat.shape, time_feats_2d.shape, len(summaries), summaries[0].shape)
+            bottleneck = self.bottleneck(cat)
+        
         activation = self.sigmoid_layer(bottleneck)
         return self.linear(activation)
     
@@ -958,9 +1048,6 @@ class CBM(nn.Module):
             indicators = torch.cat([indicators[:, 1:, :], ind], dim=1)
         
         return torch.cat(predictions, axis=1)
-    
-    def get_num_concepts(self):
-        return self.num_concepts
     
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
@@ -1040,7 +1127,7 @@ class CBM(nn.Module):
             for batch in train_loader:
                 X_time, X_ind, X_static, y = extract_to(batch, self.device)
                 
-                if self.noise_std:
+                if self.noise_std and not self.use_multiplicative_interactions:
                     X_time = X_time + torch.normal(mean=0, std=self.noise_std, size=X_time.shape).to(device=self.device)
                 
                 y_pred = self(X_time, X_ind, X_static)
@@ -1054,18 +1141,18 @@ class CBM(nn.Module):
                 if self.use_grad_norm:
                     self.normalize_gradient_(self.parameters(), self.use_grad_norm)
                 
-                for name, param in self.named_parameters():
-                    isnan = param.grad is None or torch.isnan(param.grad).any()
-                    if isnan:
-                        print(f"Parameter: {name}, Gradient NAN? {isnan}")
-                        return
+                # for name, param in self.named_parameters():
+                #     isnan = param.grad is None or torch.isnan(param.grad).any()
+                #     if isnan:
+                #         print(f"Parameter: {name}, Gradient NAN? {isnan}")
+                #         return
                 
                 if show_grad:
                     plot_grad_flow(self.named_parameters())
                     return
                 
-                if (self.top_k != ''):
-                    self.bottleneck.weight.grad.fill_(0.)
+                # if (self.top_k != ''):
+                #     self.bottleneck.weight.grad.fill_(0.)
         
                 self.optimizer.step()
             
@@ -1137,8 +1224,10 @@ class CBM(nn.Module):
             raise NotImplementedError("Config not defined!")
         
         # Lasso regularization
-        L1_norm = torch.norm(self.bottleneck.weight, 1)
-        l1_loss = self.l1_lambda * L1_norm 
+        l1_loss = 0
+        if self.l1_lambda != 0:
+            L1_norm = torch.norm(self.bottleneck.weight, 1)
+            l1_loss = self.l1_lambda * L1_norm
         
         # Cosine_similarity regularization
         cos_sim_loss = 0

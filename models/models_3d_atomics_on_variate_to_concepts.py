@@ -82,6 +82,7 @@ class CBM(nn.Module):
                 use_fixes,
                 use_grad_norm,
                 noise_std,
+                use_summaries,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_50perc,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
@@ -127,6 +128,7 @@ class CBM(nn.Module):
         self.use_fixes = use_fixes
         self.use_grad_norm = use_grad_norm
         self.noise_std = noise_std
+        self.use_summaries  = use_summaries 
         
         self.differentiate_cutoffs = differentiate_cutoffs
         self.init_cutoffs_f = init_cutoffs_f 
@@ -222,28 +224,35 @@ class CBM(nn.Module):
             file = open(self.top_k)
             csvreader = csv.reader(file)
             header = next(csvreader)
-            top_k_inds = []
+            
             top_k_concepts = []
+            top_k_inds = []
             i = 0
+            
+            layers_to_prune = [self.layer_time_to_atomics, self.layer_to_concepts] # layer id / seq needs to be the same as during greedy selection
+            
             for row in csvreader:
-                if (i <self.top_k_num):
-                    top_k_inds.append(int(row[2]))
+                if (i < self.top_k_num):
                     top_k_concepts.append(int(row[1]))
+                    top_k_concepts.append(int(row[2]))
+                    top_k_inds.append(int(row[3]))
                     i+=1
                 else:
                     break
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool) #device=self.device # during init still on cpu
-            for i in range(len(top_k_inds)):
-                condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0))) #device=self.device # during init still on cpu
+            
+            for i, layer in enumerate(layers_to_prune):
+                condition = torch.zeros(layer.weight.shape, dtype=torch.bool)
+                
+                for concept_id, feat_id in zip(top_k_concepts, top_k_inds):
+                    condition[concept_id][feat_id] = True
+                    
+                layer.weight = torch.nn.Parameter(layer.weight.where(condition, torch.tensor(0.0)))
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
         assert time_dependent_vars.dim() == 3 and time_dependent_vars.size(1) == self.seq_len and time_dependent_vars.size(2) == self.changing_dim
         assert indicators.shape == time_dependent_vars.shape
         assert torch.equal(static_vars, torch.empty(0, device=self.device)) or (static_vars.dim() == 2 and static_vars.size(1) == self.static_dim)
-        
-        summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
         
         if self.use_indicators:
             cat = torch.cat([time_dependent_vars, indicators], axis=1) # cat along time instead of var
@@ -257,9 +266,13 @@ class CBM(nn.Module):
                 static_vars = static_vars.unsqueeze(1) # b x 1 x 8
                 static_vars = static_vars.expand(-1, rearranged.size(1), -1) # -1 => unchanged
             
-            summaries = [tensor.unsqueeze(-1) for tensor in summaries] # add time dim for cat
-            
-            patient_and_summaries = torch.cat([rearranged, static_vars] + summaries, axis=-1)
+            if self.use_summaries:
+                summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
+                summaries = [tensor.unsqueeze(-1) for tensor in summaries] # add time dim for cat
+                
+                patient_and_summaries = torch.cat([rearranged, static_vars] + summaries, axis=-1)
+            else:
+                patient_and_summaries = torch.cat([rearranged, static_vars], axis=-1)
             # print("patient_and_summaries", patient_and_summaries.shape)
             
             atomics = self.layer_time_to_atomics(patient_and_summaries)
@@ -280,7 +293,11 @@ class CBM(nn.Module):
             # print("after flatten", flat.shape)
             
             # concat activation and summaries
-            atmomics_and_summaries = torch.cat([flat, static_vars] + summaries, axis=-1)
+            if self.use_summaries:
+                summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
+                atmomics_and_summaries = torch.cat([flat, static_vars] + summaries, axis=-1)
+            else:
+                atmomics_and_summaries = torch.cat([flat, static_vars], axis=-1)
             # print("atmomics_and_summaries", atmomics_and_summaries.shape)
             
             concepts = self.layer_to_concepts(atmomics_and_summaries)
@@ -315,9 +332,6 @@ class CBM(nn.Module):
             indicators = torch.cat([indicators[:, 1:, :], ind], dim=1)
         
         return torch.cat(predictions, axis=1)
-    
-    def get_num_concepts(self):
-        return self.num_concepts
     
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
@@ -417,11 +431,11 @@ class CBM(nn.Module):
                     train_loss += loss * X_time.size(0)
                     
                     
-                    for name, param in self.named_parameters():
-                        isnan = param.grad is None or torch.isnan(param.grad).any()
-                        if isnan:
-                            print(f"Parameter: {name}, Gradient NAN? {isnan}")
-                            return
+                    # for name, param in self.named_parameters():
+                    #     isnan = param.grad is None or torch.isnan(param.grad).any()
+                    #     if isnan:
+                    #         print(f"Parameter: {name}, Gradient NAN? {isnan}")
+                    #         return
                     
                     if show_grad:
                         plot_grad_flow(self.named_parameters())
