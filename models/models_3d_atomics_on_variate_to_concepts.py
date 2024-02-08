@@ -93,7 +93,7 @@ class CBM(nn.Module):
                 l1_lambda=0.,
                 cos_sim_lambda=0.,
                 top_k = '',
-                top_k_num = 0,
+                top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
                 device = "cuda",
                 ):
@@ -156,9 +156,9 @@ class CBM(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 1:
             self.output_af = nn.Sigmoid()
-        elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
+        elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 1:
             self.output_af = nn.Softmax(dim=1)
         elif self.task_type == TaskType.REGRESSION:
             self.output_af = nn.Identity()
@@ -216,11 +216,15 @@ class CBM(nn.Module):
         self.layer_output = nn.Linear(self.num_concepts, self.output_dim)
         # B x Out
         
-        self.deactivate_bottleneck_weights_if_top_k()
+        self.to(device=self.device)
+        # self.deactivate_bottleneck_weights_if_top_k()
         return
         
     def deactivate_bottleneck_weights_if_top_k(self):
         if (self.top_k != ''):
+            # init weights, needed with lazy layers
+            self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
+            
             file = open(self.top_k)
             csvreader = csv.reader(file)
             header = next(csvreader)
@@ -229,7 +233,8 @@ class CBM(nn.Module):
             top_k_inds = []
             i = 0
             
-            layers_to_prune = [self.layer_time_to_atomics, self.layer_to_concepts] # layer id / seq needs to be the same as during greedy selection
+            self.layers_to_prune = [{"layer": self.layer_time_to_atomics}, 
+                                    {"layer": self.layer_to_concepts}] # layer id / seq needs to be the same as during greedy selection
             
             for row in csvreader:
                 if (i < self.top_k_num):
@@ -240,13 +245,15 @@ class CBM(nn.Module):
                 else:
                     break
             
-            for i, layer in enumerate(layers_to_prune):
-                condition = torch.zeros(layer.weight.shape, dtype=torch.bool)
+            for i, prune_info in enumerate(self.layers_to_prune):
+                layer = prune_info["layer"]
+                weight_mask = torch.zeros(layer.weight.shape, dtype=torch.bool, device=self.device)
                 
                 for concept_id, feat_id in zip(top_k_concepts, top_k_inds):
-                    condition[concept_id][feat_id] = True
-                    
-                layer.weight = torch.nn.Parameter(layer.weight.where(condition, torch.tensor(0.0)))
+                    weight_mask[concept_id][feat_id] = True
+                
+                prune_info["weight_mask"] = weight_mask
+                layer.weight = torch.nn.Parameter(layer.weight.where(weight_mask, torch.tensor(0.0, device=self.device)))
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
@@ -440,9 +447,11 @@ class CBM(nn.Module):
                     if show_grad:
                         plot_grad_flow(self.named_parameters())
                     
-                    # if (self.top_k != ''): # freeze parameters
-                    #     self.bottleneck.weight.grad.fill_(0.)
-            
+                    if (self.top_k != ''):
+                        for prune_info in self.layers_to_prune:
+                            layer, weight_mask = prune_info.values()
+                            layer.weight.grad = torch.nn.Parameter(layer.weight.grad.where(weight_mask, torch.tensor(0.0, device=self.device)))
+
                     self.optimizer.step()
                 
                 train_loss = train_loss / len(train_loader.sampler)

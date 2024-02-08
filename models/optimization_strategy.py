@@ -50,7 +50,7 @@ def get_top_features_per_concept(layer) -> List[List[int]]:
 
 def greedy_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None):
     optimize_metric.reset()
-    FEATURE_BUDGET = np.sum([20 * layer.out_features for layer in layers_to_prune])
+    FEATURE_BUDGET = np.sum([10 * layer.out_features for layer in layers_to_prune])
     
     def setup(layer, top_k):
         condition = torch.zeros(layer.weight.shape, dtype=torch.bool).to(device)
@@ -80,7 +80,7 @@ def greedy_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_i
                                 # get score with added feature
                                 for batch in val_loader:
                                     *data, y_true = extract_to(batch, device)
-                                    y_pred = model.forward_probabilities(*data)
+                                    y_pred = model(*data)
                                     _ = optimize_metric(y_pred, y_true)
                                 
                                 curr_score = optimize_metric.compute().item()
@@ -120,7 +120,7 @@ def greedy_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_i
                         metric = metric.to(device=device)
                         for batch in val_loader:
                             *X, y_true = extract_to(batch, device)
-                            y_pred = model.forward_probabilities(*X)
+                            y_pred = model(*X)
                             curr_score = metric(y_pred, y_true)
                         curr_score = metric.compute().item()
                         results[name].append(curr_score)

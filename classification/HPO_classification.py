@@ -177,7 +177,7 @@ def objective(trial: TrialState):
             
             for Xb, yb in val_loader:
                 Xb, yb = Xb.to(device), yb.to(device)
-                probs = model.forward_probabilities(Xb)
+                probs = model(Xb)
                 
                 auc = auroc_metric(probs, yb).item()
                 acc = accuracy_metric(probs, yb).item()

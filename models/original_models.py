@@ -823,8 +823,8 @@ class CBM(nn.Module):
                 opt_weight_decay = 0.,
                 l1_lambda=0.,
                 cos_sim_lambda=0.,
-                top_k = '',
-                top_k_num = 0,
+                top_k = "",
+                top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
                 device = 'cuda',
                 ):
@@ -887,9 +887,9 @@ class CBM(nn.Module):
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
-        if self.task_type == TaskType.CLASSIFICATION and self.output_dim <= 2:
+        if self.task_type == TaskType.CLASSIFICATION and self.output_dim == 1:
             self.output_af = nn.Sigmoid()
-        elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 2:
+        elif self.task_type == TaskType.CLASSIFICATION and self.output_dim > 1:
             self.output_af = nn.Softmax(dim=1)
         elif self.task_type == TaskType.REGRESSION:
             self.output_af = nn.Identity()
@@ -939,11 +939,15 @@ class CBM(nn.Module):
         # prediction task
         self.linear = nn.LazyLinear(self.output_dim)
         
-        self.deactivate_bottleneck_weights_if_top_k()
+        self.to(device=self.device)
+        # self.deactivate_bottleneck_weights_if_top_k()
         return
         
     def deactivate_bottleneck_weights_if_top_k(self):
         if (self.top_k != ''):
+            # init weights, needed with lazy layers
+            self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
+            
             file = open(self.top_k)
             csvreader = csv.reader(file)
             header = next(csvreader)
@@ -951,21 +955,24 @@ class CBM(nn.Module):
             top_k_concepts = []
             top_k_inds = []
             i = 0
-                        
+
             for row in csvreader:
-                if (i <self.top_k_num):
-                    top_k_concepts.append(int(row[2]))
-                    top_k_inds.append(int(row[3]))
+                if (i < self.top_k_num):
+                    c_id = int(row[2])
+                    feat_id = int(row[3])
+                    
+                    top_k_concepts.append(c_id)
+                    top_k_inds.append(feat_id)
                     i+=1
                 else:
                     break
             
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool)
+            self.weight_mask = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool, device=self.device)
             
             for i in range(len(top_k_inds)):
-                condition[top_k_concepts[i]][top_k_inds[i]] = True
-                
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0)))
+                self.weight_mask[top_k_concepts[i]][top_k_inds[i]] = True
+            
+            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(self.weight_mask, torch.tensor(0.0, device=self.device)))
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
@@ -1074,24 +1081,7 @@ class CBM(nn.Module):
         self.earlyStopping.best_state = checkpoint
         self.earlyStopping.min_max_criterion = min(checkpoint['val_losses'])
         
-        if (self.top_k != ''):
-            file = open(self.top_k)
-            csvreader = csv.reader(file)
-            header = next(csvreader)
-            top_k_inds = []
-            top_k_concepts = []
-            i = 0
-            for row in csvreader:
-                if (i<self.top_k_num):
-                    top_k_inds.append(int(row[2]))
-                    top_k_concepts.append(int(row[1]))
-                    i+=1
-                else:
-                    break
-            condition = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool, device=self.device)
-            for i in range(len(top_k_inds)):
-                condition[top_k_concepts[i]][top_k_inds[i]]=True
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(condition, torch.tensor(0.0, device=self.device)))
+        self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
         
         return checkpoint.get("early_stopping", False)
@@ -1151,9 +1141,9 @@ class CBM(nn.Module):
                     plot_grad_flow(self.named_parameters())
                     return
                 
-                # if (self.top_k != ''):
-                #     self.bottleneck.weight.grad.fill_(0.)
-        
+                if (self.top_k != ''):
+                    self.bottleneck.weight.grad = torch.nn.Parameter(self.bottleneck.weight.grad.where(self.weight_mask, torch.tensor(0.0, device=self.device)))
+
                 self.optimizer.step()
             
             train_loss = train_loss / len(train_loader.sampler)
