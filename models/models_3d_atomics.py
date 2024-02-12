@@ -32,9 +32,7 @@ class CBM(nn.Module):
                 output_dim,
                 use_summaries_for_atomics,
                 use_indicators,
-                use_fixes,
                 use_grad_norm,
-                noise_std,
                 use_summaries,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_50perc,
@@ -78,9 +76,7 @@ class CBM(nn.Module):
         
         self.use_summaries_for_atomics = use_summaries_for_atomics
         self.use_indicators = use_indicators
-        self.use_fixes = use_fixes
         self.use_grad_norm = use_grad_norm
-        self.noise_std = noise_std
         self.use_summaries  = use_summaries 
         
         self.differentiate_cutoffs = differentiate_cutoffs

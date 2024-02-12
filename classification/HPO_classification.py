@@ -21,8 +21,8 @@ import optuna
 from optuna.trial import TrialState
 from optuna.visualization import *
 
-import models.original_models as original_models
-import models.models_3d_atomics_on_variate_to_concepts as new_models
+import models.models_original as models_original
+import models.models_3d_atomics as new_models
 from vasopressor.preprocess_helpers import *
 from models.helper import *
 from models.param_initializations import *

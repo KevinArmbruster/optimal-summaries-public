@@ -114,7 +114,7 @@ def create_3d_input_as_b_v_t(time_dependent_vars, indicators, static_vars, summa
         static_vars = static_vars.unsqueeze(variate) # b x s1 x 1
         static_vars = static_vars.expand(-1, -1, time_dependent_vars.size(variate)) # b x s1 x v
     
-    if summaries: # b x s2 x v
+    if summaries != None: # b x s2 x v
         input = torch.cat([input, static_vars, summaries], axis=time)
     else:
         input = torch.cat([input, static_vars], axis=time)

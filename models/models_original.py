@@ -63,10 +63,8 @@ class CBM(nn.Module):
                 num_concepts,
                 output_dim,
                 use_indicators,
-                use_fixes,
                 use_only_last_timestep,
                 use_grad_norm,
-                noise_std,
                 use_multiplicative_interactions,
                 use_summaries,
                 differentiate_cutoffs = True,
@@ -109,10 +107,8 @@ class CBM(nn.Module):
         self.num_summaries = 12 # number of calculated summaries
         
         self.use_indicators = use_indicators
-        self.use_fixes = use_fixes
         self.use_only_last_timestep = use_only_last_timestep
         self.use_grad_norm = use_grad_norm
-        self.noise_std = noise_std
         self.use_multiplicative_interactions = use_multiplicative_interactions
         self.use_summaries = use_summaries
         
@@ -212,24 +208,25 @@ class CBM(nn.Module):
             top_k_concepts = []
             top_k_inds = []
             i = 0
-
+            
             for row in csvreader:
                 if (i < self.top_k_num):
-                    c_id = int(row[2])
-                    feat_id = int(row[3])
-                    
-                    top_k_concepts.append(c_id)
-                    top_k_inds.append(feat_id)
+                    top_k_concepts.append(int(row[1]))
+                    top_k_concepts.append(int(row[2]))
+                    top_k_inds.append(int(row[3]))
                     i+=1
                 else:
                     break
             
-            self.weight_mask = torch.zeros(self.bottleneck.weight.shape, dtype=torch.bool, device=self.device)
-            
-            for i in range(len(top_k_inds)):
-                self.weight_mask[top_k_concepts[i]][top_k_inds[i]] = True
-            
-            self.bottleneck.weight = torch.nn.Parameter(self.bottleneck.weight.where(self.weight_mask, torch.tensor(0.0, device=self.device)))
+            self.weight_masks = []
+            for i, layer in enumerate(self.regularized_layers):
+                weight_mask = torch.zeros(layer.weight.shape, dtype=torch.bool, device=self.device)
+                
+                for concept_id, feat_id in zip(top_k_concepts, top_k_inds):
+                    weight_mask[concept_id][feat_id] = True
+                
+                self.weight_masks.append(weight_mask)
+                layer.weight = torch.nn.Parameter(layer.weight.where(weight_mask, torch.tensor(0.0, device=self.device)))
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
@@ -238,7 +235,7 @@ class CBM(nn.Module):
         assert torch.equal(static_vars, torch.empty(0, device=self.device)) or (static_vars.dim() == 2 and static_vars.size(1) == self.static_dim)
         
         # Encodes the patient_batch, then computes the forward.
-        summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators, self.use_fixes)
+        summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators)
         
         if self.use_multiplicative_interactions == "MI":
             input = get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
@@ -304,7 +301,7 @@ class CBM(nn.Module):
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
         
-    def _load_model(self, path, print_=True):
+    def _load_model(self, path, print=True):
         """
         Args:
             path (str): filepath to the model
@@ -312,28 +309,31 @@ class CBM(nn.Module):
         try:
             checkpoint = torch.load(path)
         except:
-            return
+            return False
+        
+        if print:
+            print("Loaded model from " + path)
         
         self.load_state_dict(checkpoint['model_state_dict'])
-        if print_:
-            print("Loaded model from " + path)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
-        
-        self.earlyStopping.best_state = checkpoint
-        self.earlyStopping.min_max_criterion = min(checkpoint['val_losses'])
-        
+                
         self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
         
-        return checkpoint.get("early_stopping", False)
-
+        return True
+    
+    def try_load_else_fit(self, *args, **kwargs):
+        if self._load_model(kwargs.get('save_model_path')):
+            return
+        else:
+            return self.fit(*args, **kwargs)
+    
     def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, scheduler=None, trial=None):
         """
-        
         Args:
             train_loader (torch.DataLoader): 
             val_tensor (torch.DataLoader):
@@ -352,81 +352,89 @@ class CBM(nn.Module):
         self.earlyStopping = EarlyStopping(patience=patience)
         self._load_model(save_model_path)
         
-        for epoch in tqdm(range(self.curr_epoch+1, max_epochs)):
-            self.train()
-            train_loss = 0
+        epochs = range(self.curr_epoch+1, max_epochs)
+        
+        with tqdm(total=len(epochs), unit=' epoch') as pbar:
             
-            for batch in train_loader:
-                X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
-                
-                if self.noise_std and not self.use_multiplicative_interactions:
-                    X_time = X_time + torch.normal(mean=0, std=self.noise_std, size=X_time.shape).to(device=self.device)
-                
-                y_pred = self(X_time, X_ind, X_static)
-
-                loss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
-
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                train_loss += loss * X_time.size(0)
-                
-                if self.use_grad_norm:
-                    normalize_gradient_(self.parameters(), self.use_grad_norm)
-                
-                # for name, param in self.named_parameters():
-                #     isnan = param.grad is None or torch.isnan(param.grad).any()
-                #     if isnan:
-                #         print(f"Parameter: {name}, Gradient NAN? {isnan}")
-                #         return
-                
-                if (self.top_k != ''):
-                    self.bottleneck.weight.grad = torch.nn.Parameter(self.bottleneck.weight.grad.where(self.weight_mask, torch.tensor(0.0, device=self.device)))
-
-                self.optimizer.step()
+            for epoch in epochs:
+                self.train()
+                train_loss = 0
             
-            train_loss = train_loss / len(train_loader.sampler)
-            
-            if (epoch % save_every_n_epochs) == (-1 % save_every_n_epochs):
-                self.eval()
-                with torch.no_grad():
+                ### Train loop
+                for batch in train_loader:
+                    X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
                     
-                    self.train_losses.append(train_loss.item())
-                    
-                    # Calculate validation set loss
-                    val_loss = 0
-                    for batch in val_loader:
-                        X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
+                    y_pred = self(X_time, X_ind, X_static)
 
-                        # Forward pass.
-                        y_pred = self(X_time, X_ind, X_static)
+                    loss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
+                    
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    
+                    if self.use_grad_norm:
+                        normalize_gradient_(self.parameters(), self.use_grad_norm)
 
-                        vloss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
-                        val_loss += vloss * X_time.size(0)
+                    train_loss += loss * X_time.size(0)
                     
-                    val_loss = val_loss / len(val_loader.sampler)
-                    self.val_losses.append(val_loss.item())
+                    # for name, param in self.named_parameters():
+                    #     isnan = param.grad is None or torch.isnan(param.grad).any()
+                    #     if isnan:
+                    #         print(f"Parameter: {name}, Gradient NAN? {isnan}")
+                    #         return
                     
-                    if scheduler:
-                        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                            scheduler.step(val_loss)
-                        else:
-                            scheduler.step()
-                    
-                    state = create_state_dict(self, epoch)
-                    
-                    if self.earlyStopping.check_improvement(val_loss, state):
-                        break
-                    
-                    if save_model_path:
-                        torch.save(state, save_model_path)
-                    
-                    if trial:
-                        trial.report(val_loss, epoch)
+                    if (self.top_k != ''):
+                        for layer, weight_mask in zip(self.regularized_layers, self.weight_masks):
+                            layer.weight.grad = torch.nn.Parameter(layer.weight.grad.where(weight_mask, torch.tensor(0.0, device=self.device)))
+
+                    self.optimizer.step()
+                
+                train_loss = train_loss / len(train_loader.sampler)
+                
+                
+                if (epoch % save_every_n_epochs) == 0:
+                    self.eval()
+                    with torch.no_grad():
                         
-                        if trial.should_prune():
-                            raise optuna.exceptions.TrialPruned()
-            
-            rtpt.step(subtitle=f"loss={train_loss:2.2f}")
+                        self.train_losses.append(train_loss.item())
+                        
+                        ### Validation loop
+                        val_loss = 0
+                        for batch in val_loader:
+                            X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
+                            
+                            y_pred = self(X_time, X_ind, X_static)
+
+                            vloss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
+                            val_loss += vloss * X_time.size(0)
+                        
+                        val_loss = val_loss / len(val_loader.sampler)
+                        self.val_losses.append(val_loss.item())
+                        
+                        
+                        ### Auxilliary stuff
+                        state = create_state_dict(self, epoch)
+                        
+                        if self.earlyStopping.check_improvement(val_loss, state):
+                            break
+                        
+                        if scheduler:
+                            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                                scheduler.step(val_loss)
+                            else:
+                                scheduler.step()
+                        
+                        if save_model_path:
+                            torch.save(state, save_model_path)
+                        
+                        if trial:
+                            trial.report(val_loss, epoch)
+                            
+                            if trial.should_prune():
+                                raise optuna.exceptions.TrialPruned()
+                
+                pbar.set_postfix({'Train Loss': f'{train_loss.item():.5f}', 'Val Loss': f'{self.val_losses[-1]:.5f}', "Best Val Loss": f'{self.earlyStopping.min_max_criterion:.5f}'})
+                pbar.update()
+                rtpt.step(subtitle=f"loss={train_loss:2.2f}")
             
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)

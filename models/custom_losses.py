@@ -23,18 +23,18 @@ def compute_loss(y_true: torch.Tensor, y_pred: torch.Tensor, p_weight: torch.Ten
     # Lasso regularization
     l1_loss = 0
     if l1_lambda != 0:
-        L1_norm = torch.sum([torch.norm(layer.weight, p=1) for layer in regularized_layers])
-        l1_loss = l1_lambda * L1_norm
+        l1_norm = sum([torch.norm(layer.weight, p=1) for layer in regularized_layers])
+        l1_loss = l1_lambda * l1_norm
     
     # Cosine_similarity regularization
     cos_sim_loss = 0
     if cos_sim_lambda != 0:
-        cos_sim = torch.sum([cos_sim(layer) for layer in regularized_layers])
+        cos_sim = sum([cosine_similarity_over_out_channels(layer) for layer in regularized_layers])
         cos_sim_loss = cos_sim_lambda * cos_sim
     
     return task_loss + l1_loss + cos_sim_loss
 
-def cos_sim(layer: torch.nn.Module):
+def cosine_similarity_over_out_channels(layer: torch.nn.Module):
     if layer.out_features == 1:
         return 0
     

@@ -7,7 +7,7 @@ import torch
 from torch.nn import Parameter
 from torch.utils.data import DataLoader
 from typing import List
-from models.original_models import CBM
+from models.models_original import CBM
 from tqdm import tqdm
 from torchmetrics import Metric
 from collections import defaultdict
