@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-def calculate_summaries(model, time_dependent_vars, indicators, use_indicators, use_fixes, eps=1e-8):
+def calculate_summaries(model, time_dependent_vars, indicators, use_indicators, use_fixes=False, eps=1e-8):
     summaries = []
     
     # Computes the encoding (s, x) + (weighted_summaries) in the order defined in weight_parser.
@@ -188,5 +188,11 @@ def calculate_summaries(model, time_dependent_vars, indicators, use_indicators, 
     # print("summaries", len(summaries))
     # print("mean_feats", summaries[0].shape) # torch.Size([512, 7])
     # print("var_feats", summaries[1].shape) # torch.Size([512, 7])
+    
+    # list of len == num_summaries (s)
+    # each b x v
+    summaries = torch.cat([tensor.unsqueeze(1) for tensor in summaries], axis=1)
+    # inflate s * b x 1 x v
+    # out b x s x v
     
     return summaries

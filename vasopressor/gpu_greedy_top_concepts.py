@@ -13,7 +13,7 @@ from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
 from models import CBM
 from param_initializations import *
 from preprocess_helpers import myPreprocessed
-from optimization_strategy import greedy_selection
+from optimization_strategy import greedy_forward_selection
 
 def tensor_wrap(x, klass=torch.Tensor):
     return x if 'torch' in str(type(x)) else klass(x)
@@ -127,7 +127,7 @@ logregbottleneck.fit(train_loader, val_loader, p_weight,
 
 auroc_metric = BinaryAUROC().cuda()
 acc_metric = BinaryAccuracy().cuda()
-results = greedy_selection(auroc_metric, test_loader, topkinds, logregbottleneck, track_metrics=[acc_metric])
+results = greedy_forward_selection(auroc_metric, test_loader, topkinds, logregbottleneck, track_metrics=[acc_metric])
 
 
 filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state, n_concepts)

@@ -1,7 +1,14 @@
 from typing import List
+import numpy as np
 import torch
+from torch.nn.functional import normalize
+from torchmetrics.classification import AUROC, Accuracy, ConfusionMatrix, F1Score
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from einops import rearrange
+from enum import Enum
+
+from models.weights_parser import WeightsParser
 
 
 summary_dict = {0:'mean', 1:'var', 2:'ever measured', 3:'mean of indicators', 4: 'var of indicators', 5:'# switches', 6:'slope', 7:'slope std err', 8:'first time measured', 9:'last time measured', 10:'hours above threshold', 11:'hours below threshold'}
@@ -67,6 +74,23 @@ def plot_grad_flow(named_parameters):
     plt.show()
 
 
+def visualize_top100_weights_per_channel(layer):
+    abs_weight = layer.weight.detach().cpu().numpy()
+    abs_weight = np.abs(abs_weight)
+    
+    max_y = np.max(abs_weight)
+
+    for c in range(abs_weight.shape[0]):
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        inds = np.argsort(-abs_weight[c])[:100]
+        ax.bar(np.arange(1,101), abs_weight[c][inds])
+        ax.set_xlabel("Top 100 features")
+        ax.set_ylabel("abs value of feature coefficient")
+        ax.set_ylim(0, max_y)
+        plt.show()
+
+
 def extract_to(batch, device):
     if len(batch) == 3:
         X_time, X_ind, y = [tensor.to(device=device) for tensor in batch]
@@ -75,3 +99,137 @@ def extract_to(batch, device):
         X_time, X_ind, X_static, y = [tensor.to(device=device) for tensor in batch]
     
     return X_time, X_ind, X_static, y
+
+
+def create_3d_input_as_b_v_t(time_dependent_vars, indicators, static_vars, summaries, use_indicators):
+    time = 1
+    variate = 2
+    
+    if use_indicators:
+        input = torch.cat([time_dependent_vars, indicators], axis=time)
+    else:
+        input = time_dependent_vars
+    
+    if not torch.equal(static_vars, torch.empty(0, device=static_vars.device)):
+        static_vars = static_vars.unsqueeze(variate) # b x s1 x 1
+        static_vars = static_vars.expand(-1, -1, time_dependent_vars.size(variate)) # b x s1 x v
+    
+    if summaries: # b x s2 x v
+        input = torch.cat([input, static_vars, summaries], axis=time)
+    else:
+        input = torch.cat([input, static_vars], axis=time)
+    
+    input = rearrange(input, "b t v -> b v t")
+    return input
+
+
+def get_time_feat_2d(time_dependent_vars, indicators, static_vars, use_only_last_timestep, use_indicators):
+    seq_len = time_dependent_vars.size(1)
+    
+    if use_only_last_timestep:
+        time_feats_2d = time_dependent_vars[:, seq_len-1, :]
+        
+        if use_indicators:
+            ind2d = indicators[:, seq_len-1, :]
+            time_feats_2d = torch.cat((time_feats_2d, ind2d), dim=-1)
+            
+        time_feats_2d = torch.cat((time_feats_2d, static_vars), dim=-1)
+    else:
+        # use full timeseries, reshape 3d to 2d, keep sample size N and merge Time x Variables (N x T x V) => (N x T*V)
+        time_feats_2d = time_dependent_vars.reshape(time_dependent_vars.shape[0], -1) # result is V1_T1, V2_T1, V3_T1, ..., V1_T2, V2_T2, V3_T2, ... repeat V, T times
+        
+        if use_indicators:
+            indicators_2d = indicators.reshape(indicators.shape[0], -1)
+            time_feats_2d = torch.cat((time_feats_2d, indicators_2d), dim=1)
+        
+        time_feats_2d = torch.cat((time_feats_2d, static_vars), dim=1)
+    
+    return time_feats_2d
+    
+
+def normalize_gradient_(params, norm_type, p_norm_type=2):
+    for param in params:
+        if norm_type == "FULL" or torch.squeeze(param.grad).dim() < 2:
+            param.grad = normalize(param.grad, p=p_norm_type, dim=None)
+        elif norm_type == "COMPONENT_WISE":
+            param.grad = normalize(param.grad, p=p_norm_type, dim=0)
+        
+    return
+
+
+def evaluate_classification(model, dataloader, num_classes = 2, average = "macro", device = "cpu"):
+    
+    if num_classes == 2:
+        auroc_metric = AUROC(task="binary").to(device)
+        accuracy_metric = Accuracy(task="binary").to(device)
+        f1_metric = F1Score(task="binary").to(device)
+        # conf_matrix = ConfusionMatrix(task="binary").to(device)
+    else:
+        auroc_metric = AUROC(task="multiclass", num_classes=num_classes, average = average).to(device)
+        accuracy_metric = Accuracy(task="multiclass", num_classes=num_classes, top_k=1, average = average).to(device)
+        f1_metric = F1Score(task="multiclass", num_classes=num_classes, top_k=1, average = average).to(device)
+        # conf_matrix = ConfusionMatrix(task="multiclass", num_classes=num_classes).to(device)
+
+    for batch in dataloader:
+        *data, target = extract_to(batch, device)
+        preds = model(*data)
+
+        _ = auroc_metric(preds, target).item()
+        _ = accuracy_metric(preds, target).item()
+        _ = f1_metric(preds, target).item()
+
+    auc = auroc_metric.compute().item()
+    acc = accuracy_metric.compute().item()
+    f1 = f1_metric.compute().item()
+
+    auroc_metric.reset()
+    accuracy_metric.reset()
+    f1_metric.reset()
+    
+    print("AUC macro", auc)
+    print("ACC macro", acc)
+    print(" F1 macro", f1)
+    
+    return auc, acc, f1
+
+
+class TaskType(Enum):
+    CLASSIFICATION = "Classification"
+    REGRESSION = "Regression"
+
+
+def create_state_dict(model, epoch):
+    state = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': model.optimizer.state_dict(),
+                    'train_losses': model.train_losses,
+                    'val_losses': model.val_losses,
+                    }
+        
+    return state
+
+def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, seq_len = 1, use_indicators = True, str_type = 'linear'):
+    if str_type == 'linear':
+        time_feat_dim = 2 * changing_dim * seq_len + static_dim
+        parser.add_shape(str(str_type) + '_time_', time_feat_dim)
+        
+    parser.add_shape(str(str_type) + '_mean_', changing_dim)
+    parser.add_shape(str(str_type) + '_var_', changing_dim)
+    if use_indicators:
+        parser.add_shape(str(str_type) + '_ever_measured_', changing_dim)
+        parser.add_shape(str(str_type) + '_mean_indicators_', changing_dim)
+        parser.add_shape(str(str_type) + '_var_indicators_', changing_dim)
+        parser.add_shape(str(str_type) + '_switches_', changing_dim)
+    
+    # slope_indicators are the same weights for all of the slope features.
+    parser.add_shape(str(str_type) + '_slope_', changing_dim)
+    
+    if str_type == 'linear':
+        parser.add_shape(str(str_type) + '_slope_stderr_', changing_dim)
+        if use_indicators:
+            parser.add_shape(str(str_type) + '_first_time_measured_', changing_dim)
+            parser.add_shape(str(str_type) + '_last_time_measured_', changing_dim)
+        
+    parser.add_shape(str(str_type) + '_hours_above_threshold_', changing_dim)
+    parser.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)

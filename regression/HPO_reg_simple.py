@@ -28,7 +28,7 @@ import models.models_3d_atomics_on_variate_to_concepts as new_models
 from vasopressor.preprocess_helpers import *
 from models.helper import *
 from models.param_initializations import *
-from models.optimization_strategy import greedy_selection
+from models.optimization_strategy import greedy_forward_selection
 
 gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
 device = torch.device(f'cuda:{gpu_id}') if torch.cuda.is_available else torch.device('cpu')

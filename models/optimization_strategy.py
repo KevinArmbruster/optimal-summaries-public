@@ -48,7 +48,7 @@ def get_top_features_per_concept(layer) -> List[List[int]]:
     return top_k_inds
 
 
-def greedy_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None):
+def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None):
     optimize_metric.reset()
     FEATURE_BUDGET = np.sum([10 * layer.out_features for layer in layers_to_prune])
     

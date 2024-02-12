@@ -1,54 +1,47 @@
-import numpy as np
-import pandas as pd
-import pickle
+
+import sys
+sys.path.append('..')
+
+from typing import List
 import torch
+from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
+from models.helper import TaskType
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.nn.functional import binary_cross_entropy_with_logits
 
-def custom_bce_l2(y_hat, y_true, network_weights, p_weight, alpha=1e-6):
-    bce_term = binary_cross_entropy_with_logits(y_hat, y_true, pos_weight = p_weight)
+def compute_loss(y_true: torch.Tensor, y_pred: torch.Tensor, p_weight: torch.Tensor, l1_lambda: float, cos_sim_lambda: float, regularized_layers: List[torch.nn.Module], task_type: TaskType.CLASSIFICATION):
+    output_dim = 1 if y_true.dim() == 1 else y_true.size(1)
     
-    # exclude intercept weight
-    l2 = torch.norm(network_weights[0])
-
-    return bce_term + alpha * l2
+    if task_type == TaskType.CLASSIFICATION and output_dim <= 2:
+        task_loss = binary_cross_entropy_with_logits(y_pred, y_true.float(), pos_weight = p_weight)
+    elif task_type == TaskType.CLASSIFICATION and output_dim > 2:
+        task_loss = cross_entropy(y_pred, y_true, weight = p_weight)
+    elif task_type == TaskType.REGRESSION:
+        task_loss = mse_loss(y_pred, y_true)
+    else:
+        raise NotImplementedError("Loss not defined!")
     
-
-# Modified 11/3 to use different in weights instead of L1
-def custom_bce_l1(y_hat, y_true, network_weights, p_weight, alpha=5e-4):
-    bce_term = binary_cross_entropy_with_logits(y_hat, y_true, pos_weight = p_weight)
+    # Lasso regularization
+    l1_loss = 0
+    if l1_lambda != 0:
+        L1_norm = torch.sum([torch.norm(layer.weight, p=1) for layer in regularized_layers])
+        l1_loss = l1_lambda * L1_norm
     
-    # Difference between layer 1 and layer 0
-    l1 = torch.sum(torch.abs(network_weights[1] - network_weights[0]))
-
-    return bce_term + alpha * l1
-
-# Using horseshoe regularization term defined on 
-# https://link.springer.com/article/10.1007/s13571-019-00217-7
-def custom_bce_horseshoe(y_hat, y_true, network_weights, p_weight, alpha=1e-4, tau=10.):
-    eps = 0.001
-    bce_term = binary_cross_entropy_with_logits(y_hat, y_true, pos_weight = p_weight)
-    frac_term = 1. / ((network_weights[1] - network_weights[0])**2 + eps)
-    term_inside_log = 1 + 2 * tau**2 * frac_term
-    l_hs = - torch.sum(torch.log(torch.log(term_inside_log)))
-
-    return bce_term + alpha * l_hs
-
-def LSTM_compound_loss(x_true, x_pred, y_true, y_pred, mask, model, p_weight, beta=10., alpha = 1e-4):
-    # Custom masked MSE loss for next state prediction, plus BCE with logits for outcome prediction.
-    x_loss = ((x_true - x_pred)**2)
-    x_loss_masked = x_loss.masked_select(mask).mean()
+    # Cosine_similarity regularization
+    cos_sim_loss = 0
+    if cos_sim_lambda != 0:
+        cos_sim = torch.sum([cos_sim(layer) for layer in regularized_layers])
+        cos_sim_loss = cos_sim_lambda * cos_sim
     
-    y_loss = binary_cross_entropy_with_logits(y_pred, y_true, pos_weight = p_weight)
-    
-    # Add regularization term for all of the weights of the model.
-    
-    l2_reg = torch.tensor(0.)
-    for param in model.parameters():
-        l2_reg = l2_reg + torch.norm(param)
+    return task_loss + l1_loss + cos_sim_loss
 
-    return x_loss_masked + beta * y_loss + alpha * l2_reg
+def cos_sim(layer: torch.nn.Module):
+    if layer.out_features == 1:
+        return 0
+    
+    concepts = torch.arange(layer.out_features, device=layer.weight.device)
+    indices = torch.combinations(concepts, 2)
+    
+    weights = layer.weight[indices]
+    cos_sim = torch.abs(cosine_similarity(weights[:, 0], weights[:, 1], dim=1)).sum()
+    
+    return cos_sim

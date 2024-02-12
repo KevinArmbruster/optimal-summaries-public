@@ -25,7 +25,7 @@ from models import CBM, TaskType
 from preprocess_helpers import *
 from helper import *
 from param_initializations import *
-from optimization_strategy import greedy_selection
+from optimization_strategy import greedy_forward_selection
 
 device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
 device
