@@ -24,28 +24,28 @@ from models.custom_losses import compute_loss
 
 class CBM_3d(nn.Module):
     def __init__(self, 
-                 static_dim, 
-                 changing_dim, 
-                 seq_len,
-                 num_concepts,
-                 use_indicators,
-                 use_summaries,
-                 use_grad_norm,
-                 encode_time_dim = True,
-                 differentiate_cutoffs = True,
-                 init_cutoffs_f = init_cutoffs_to_zero,
-                 init_lower_thresholds_f = init_rand_lower_thresholds, 
-                 init_upper_thresholds_f = init_rand_upper_thresholds,
-                 temperature = 0.1,
-                 opt_lr = 1e-4,
-                 opt_weight_decay = 0.,
-                 l1_lambda=0.,
-                 cos_sim_lambda=0.,
-                 top_k = '',
-                 top_k_num = 0,
-                 task_type = TaskType.CLASSIFICATION,
-                 output_dim = 2,
-                 device = 'cuda',
+                static_dim, 
+                changing_dim, 
+                seq_len,
+                n_concepts,
+                use_indicators = True,
+                use_summaries = True,
+                use_grad_norm = False,
+                encode_time_dim = True,
+                differentiate_cutoffs = True,
+                init_cutoffs_f = init_cutoffs_to_zero,
+                init_lower_thresholds_f = init_rand_lower_thresholds, 
+                init_upper_thresholds_f = init_rand_upper_thresholds,
+                temperature = 0.1,
+                opt_lr = 1e-3,
+                opt_weight_decay = 1e-5,
+                l1_lambda=1e-3,
+                cos_sim_lambda=1e-2,
+                top_k = '',
+                top_k_num = 0,
+                task_type = TaskType.CLASSIFICATION,
+                output_dim = 2,
+                device = 'cuda',
                 ):
         """Initializes the LogisticRegressionWithSummaries with training hyperparameters.
         
@@ -69,7 +69,7 @@ class CBM_3d(nn.Module):
         self.static_dim = static_dim
         self.changing_dim = changing_dim
         self.seq_len = seq_len
-        self.num_concepts = num_concepts
+        self.num_concepts = n_concepts
         self.num_summaries = 12 # number of calculated summaries in function encode_patient_batch
         
         self.use_indicators = use_indicators
@@ -226,7 +226,7 @@ class CBM_3d(nn.Module):
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
         
-    def _load_model(self, path, print=True):
+    def _load_model(self, path, print_=True):
         """
         Args:
             path (str): filepath to the model
@@ -236,7 +236,7 @@ class CBM_3d(nn.Module):
         except:
             return False
         
-        if print:
+        if print_:
             print("Loaded model from " + path)
         
         self.load_state_dict(checkpoint['model_state_dict'])

@@ -141,8 +141,8 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
     model = new_models.CBM(input_dim = input_dim, 
                             changing_dim = changing_dim, 
                             seq_len = seq_len,
-                            num_concepts = n_concepts,
-                            num_atomics = n_atomics,
+                            n_concepts = n_concepts,
+                            n_atomics = n_atomics,
                             use_summaries_for_atomics = use_summaries_for_atomics,
                             use_indicators = use_indicators,
                             opt_lr = trial.suggest_float("opt_lr", 1e-5, 1e-2, log=True), # 1e-3, # 2e-4

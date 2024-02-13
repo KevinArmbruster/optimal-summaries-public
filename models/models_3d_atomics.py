@@ -27,22 +27,22 @@ class CBM(nn.Module):
                 static_dim,
                 changing_dim, 
                 seq_len,
-                num_atomics,
-                num_concepts,
+                n_atomics,
+                n_concepts,
                 output_dim,
                 use_summaries_for_atomics,
-                use_indicators,
-                use_grad_norm,
-                use_summaries,
+                use_indicators = True,
+                use_grad_norm = False,
+                use_summaries = True,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_50perc,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
                 init_upper_thresholds_f = init_rand_upper_thresholds,
                 temperature = 0.1,
-                opt_lr = 1e-4,
-                opt_weight_decay = 0.,
-                l1_lambda=0.,
-                cos_sim_lambda=0.,
+                opt_lr = 1e-3,
+                opt_weight_decay = 1e-5,
+                l1_lambda=1e-3,
+                cos_sim_lambda=1e-2,
                 top_k = '',
                 top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
@@ -70,8 +70,8 @@ class CBM(nn.Module):
         self.static_dim = static_dim
         self.changing_dim = changing_dim
         self.seq_len = seq_len
-        self.num_concepts = num_concepts
-        self.num_atomics = num_atomics
+        self.num_concepts = n_concepts
+        self.num_atomics = n_atomics
         self.num_summaries = 12 # number of calculated summaries
         
         self.use_summaries_for_atomics = use_summaries_for_atomics
@@ -277,7 +277,7 @@ class CBM(nn.Module):
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
     
-    def _load_model(self, path, print=True):
+    def _load_model(self, path, print_=True):
         """
         Args:
             path (str): filepath to the model
@@ -287,7 +287,7 @@ class CBM(nn.Module):
         except:
             return False
         
-        if print:
+        if print_:
             print("Loaded model from " + path)
         
         self.load_state_dict(checkpoint['model_state_dict'])
@@ -296,7 +296,7 @@ class CBM(nn.Module):
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
-                
+        
         self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
         
