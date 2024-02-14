@@ -1,5 +1,7 @@
 from typing import List
 import numpy as np
+import pandas as pd
+import csv
 import torch
 from torch.nn.functional import normalize
 from torchmetrics.classification import AUROC, Accuracy, ConfusionMatrix, F1Score
@@ -7,6 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from einops import rearrange
 from enum import Enum
+from rtpt import RTPT
 
 from models.weights_parser import WeightsParser
 
@@ -89,6 +92,17 @@ def visualize_top100_weights_per_channel(layer):
         ax.set_ylabel("abs value of feature coefficient")
         ax.set_ylim(0, max_y)
         plt.show()
+
+
+def jaccard_similarity(*lists):
+    sets = [set(lst) for lst in lists]
+    
+    intersection = set.intersection(*sets)
+    union = set.union(*sets)
+    
+    similarity = len(intersection) / len(union)
+    
+    return similarity
 
 
 def extract_to(batch, device):
@@ -233,3 +247,10 @@ def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, seq_len 
         
     parser.add_shape(str(str_type) + '_hours_above_threshold_', changing_dim)
     parser.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)
+    return
+
+def write_df_2_csv(path: str, df: pd.DataFrame):
+    df.to_csv(path, header=True, index=False)
+
+def read_df_from_csv(path):
+    return pd.read_csv(path)

@@ -22,7 +22,7 @@ from optuna.trial import TrialState
 from optuna.visualization import *
 
 import models.models_original as models_original
-import models.models_3d_atomics as new_models
+import models.models_3d_atomics as models_3d_atomics
 from vasopressor.preprocess_helpers import *
 from models.helper import *
 from models.param_initializations import *
@@ -116,7 +116,7 @@ set_seed(random_seed)
 # %%
 
 def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim, use_summaries_for_atomics, use_indicators, device):
-    model = new_models.CBM(input_dim = input_dim, 
+    model = models_3d_atomics.CBM(input_dim = input_dim, 
                             changing_dim = changing_dim, 
                             seq_len = seq_len,
                             n_concepts = n_concepts,

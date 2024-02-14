@@ -9,7 +9,7 @@ from models.helper import TaskType
 
 
 def compute_loss(y_true: torch.Tensor, y_pred: torch.Tensor, p_weight: torch.Tensor, l1_lambda: float, cos_sim_lambda: float, regularized_layers: List[torch.nn.Module], task_type: TaskType.CLASSIFICATION):
-    output_dim = 1 if y_true.dim() == 1 else y_true.size(1)
+    output_dim = 1 if y_pred.dim() == 1 else y_pred.size(1)
     
     if task_type == TaskType.CLASSIFICATION and output_dim <= 2:
         task_loss = binary_cross_entropy_with_logits(y_pred, y_true.float(), pos_weight = p_weight)
@@ -18,6 +18,10 @@ def compute_loss(y_true: torch.Tensor, y_pred: torch.Tensor, p_weight: torch.Ten
     elif task_type == TaskType.REGRESSION:
         task_loss = mse_loss(y_pred, y_true)
     else:
+        print("task_type", task_type, task_type == TaskType.CLASSIFICATION, task_type == TaskType.REGRESSION)
+        print("output_dim", output_dim, output_dim <= 2, output_dim > 2)
+        print("y_true", y_true.shape)
+        print("y_pred", y_pred.shape)
         raise NotImplementedError("Loss not defined!")
     
     # Lasso regularization

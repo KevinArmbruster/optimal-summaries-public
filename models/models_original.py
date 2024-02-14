@@ -196,8 +196,12 @@ class CBM(nn.Module):
         # self.deactivate_bottleneck_weights_if_top_k()
         return
         
-    def deactivate_bottleneck_weights_if_top_k(self):
-        if (self.top_k != ''):
+    def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
+        if top_k:
+            self.top_k = top_k
+            self.top_k_num = top_k_num
+        
+        if self.top_k:
             # init weights, needed with lazy layers
             self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
             
@@ -320,7 +324,10 @@ class CBM(nn.Module):
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
-                
+
+        self.earlyStopping.best_state = checkpoint
+        self.earlyStopping.min_max_criterion = min(checkpoint['val_losses'])
+        
         self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
         
@@ -351,6 +358,9 @@ class CBM(nn.Module):
         
         self.earlyStopping = EarlyStopping(patience=patience)
         self._load_model(save_model_path)
+        
+        if self.earlyStopping.best_state != None:
+            return self.val_losses[-1]
         
         epochs = range(self.curr_epoch+1, max_epochs)
         

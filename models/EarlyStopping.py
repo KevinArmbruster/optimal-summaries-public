@@ -13,7 +13,7 @@ class EarlyStopping:
         self.counter = 0
         self.mode = mode
         self.min_max_criterion = float('inf') if mode == EarlyStopping.Mode.MIN else float('-inf')
-        self.best_state = 0
+        self.best_state = None
         self.warmup_epochs = warmup_epochs
 
     def check_improvement(self, criterion, state):
@@ -38,6 +38,5 @@ class EarlyStopping:
         
         if self.counter >= self.patience:
             print(f"Early Stopped")
-            self.best_state["early_stopping"] = True
             return True
         return False

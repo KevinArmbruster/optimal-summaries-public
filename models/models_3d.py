@@ -245,6 +245,9 @@ class CBM_3d(nn.Module):
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
+
+        self.earlyStopping.best_state = checkpoint
+        self.earlyStopping.min_max_criterion = min(checkpoint['val_losses'])
                 
         self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
@@ -276,6 +279,9 @@ class CBM_3d(nn.Module):
         
         self.earlyStopping = EarlyStopping(patience=patience)
         self._load_model(save_model_path)
+        
+        if self.earlyStopping.best_state != None:
+            return self.val_losses[-1]
         
         epochs = range(self.curr_epoch+1, max_epochs)
         

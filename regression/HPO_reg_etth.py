@@ -24,7 +24,7 @@ from optuna.trial import TrialState
 from optuna.visualization import *
 
 import models.models_original as models_original
-import models.models_3d_atomics as new_models
+import models.models_3d_atomics as models_3d_atomics
 from vasopressor.preprocess_helpers import *
 from models.helper import *
 from models.param_initializations import *
@@ -138,7 +138,7 @@ input_dim = 2 * changing_dim
 # %%
 
 def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changing_dim, seq_len, output_dim, use_summaries_for_atomics, use_indicators, top_k=''):
-    model = new_models.CBM(input_dim = input_dim, 
+    model = models_3d_atomics.CBM(input_dim = input_dim, 
                             changing_dim = changing_dim, 
                             seq_len = seq_len,
                             n_concepts = n_concepts,
@@ -151,7 +151,7 @@ def initializeModel_with_atomics(trial, n_atomics, n_concepts, input_dim, changi
                             cos_sim_lambda = trial.suggest_float("cos_sim_lambda", 1e-5, 1e-2, log=True), # 1e-5, # 0.01,
                             output_dim = output_dim,
                             top_k=top_k,
-                            task_type=new_models.TaskType.REGRESSION,
+                            task_type=models_3d_atomics.TaskType.REGRESSION,
                             device=device
                             )
     model = model.to(device)
