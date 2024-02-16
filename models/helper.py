@@ -4,6 +4,8 @@ import pandas as pd
 import csv
 import os, subprocess
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.functional import normalize
 from torchmetrics.classification import AUROC, Accuracy, ConfusionMatrix, F1Score
 import matplotlib.pyplot as plt
@@ -172,7 +174,9 @@ def normalize_gradient_(params, norm_type, p_norm_type=2):
     return
 
 
-def evaluate_classification(model, dataloader, num_classes = 2, average = "macro", device = "cpu"):
+def evaluate_classification(model, dataloader, num_classes = 2, average = "macro"):
+    device = model.device
+    num_classes = model.output_dim
     
     if num_classes == 2:
         auroc_metric = AUROC(task="binary").to(device)
@@ -276,3 +280,49 @@ def get_free_gpu():
 def get_filename_from_dict(folder, config):
     model_path = folder + "".join([f"{key}_{{{key}}}_" for key in config.keys()]) + "seed_{seed}.pt"
     return model_path
+
+def visualize_optimization_results(optimization_results, auc, acc, f1):
+    plt.plot(optimization_results["auc"], label = f"AUC {optimization_results['auc'].values[-1]:.3f}")
+    plt.plot(optimization_results["acc"], label = f"ACC {optimization_results['acc'].values[-1]:.3f}")
+    plt.plot(optimization_results["f1"], label = f"F1 {optimization_results['f1'].values[-1]:.3f}")
+
+    plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (pre) {auc:.3f}")
+    plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (pre) {acc:.3f}")
+    plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (pre) {f1:.3f}")
+
+    plt.xlabel('Num Features')
+    plt.ylabel('Metrics')
+    plt.title('Greedy Selection')
+
+    plt.legend()
+    plt.show()
+
+
+class LazyLinearWithMask(torch.nn.LazyLinear):
+    def __init__(self, out_features, bias=True, weight_mask=None, ema_decay=0.9):
+        super().__init__(out_features, bias)
+        self.weight_mask = weight_mask
+        self.ema_gradient = None
+        self.ema_decay = ema_decay
+    
+    def set_weight_mask(self, weight_mask):
+        self.weight_mask = weight_mask
+    
+    def clear_weight_mask(self):
+        self.weight_mask = None
+    
+    def update_ema_gradient(self):
+        if self.ema_gradient == None:
+            self.ema_gradient = self.weight.grad.detach()
+        else:
+            self.ema_gradients = self.ema_decay * self.ema_gradients + (1 - self.ema_decay) * self.weight.grad.detach()
+    
+    def create_weight_mask_from_ema_gradient(self):
+        pass
+    
+    def forward(self, input):
+        if self.weight_mask is None:
+            return F.linear(input, self.weight, self.bias)
+        else:
+            masked_weight = self.weight * self.weight_mask
+            return F.linear(input, masked_weight, self.bias)

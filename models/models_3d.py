@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 import csv
 from tqdm import tqdm
 from time import sleep
@@ -41,6 +40,7 @@ class CBM(nn.Module):
                 opt_weight_decay = 1e-5,
                 l1_lambda=1e-3,
                 cos_sim_lambda=1e-2,
+                ema_decay=0.9,
                 top_k = '',
                 top_k_num = 0,
                 task_type = TaskType.CLASSIFICATION,
@@ -87,6 +87,7 @@ class CBM(nn.Module):
         self.opt_weight_decay = opt_weight_decay
         self.l1_lambda = l1_lambda
         self.cos_sim_lambda = cos_sim_lambda
+        self.ema_decay = ema_decay
         
         self.top_k = top_k
         self.top_k_num = top_k_num
@@ -139,12 +140,12 @@ class CBM(nn.Module):
         if self.encode_time_dim:
             # in B x V x T
             # in_dim = 2 * self.changing_dim + self.static_dim
-            self.bottleneck = nn.LazyLinear(self.num_concepts)
+            self.bottleneck = LazyLinearWithMask(self.num_concepts)
             # -> B x V x C
             
         else: # encode variate dim
             # in B x T x V
-            self.bottleneck = nn.LazyLinear(self.num_concepts)
+            self.bottleneck = LazyLinearWithMask(self.num_concepts)
             # -> B x T x C
         
         self.flatten = nn.Flatten()
@@ -155,12 +156,25 @@ class CBM(nn.Module):
         
         self.regularized_layers = [self.bottleneck]
         
+        self.ema_gradients = {}
+        for name, param in self.named_parameters():
+            self.ema_gradients[name] = None
+        
         self.to(device=self.device)
         self.deactivate_bottleneck_weights_if_top_k()
         return
+    
+    def update_ema_gradients(self):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                layer.update_ema_gradient()
+    
+    def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
+        if top_k:
+            self.top_k = top_k
+            self.top_k_num = top_k_num
         
-    def deactivate_bottleneck_weights_if_top_k(self):
-        if (self.top_k != ''):
+        if self.top_k:
             # init weights, needed with lazy layers
             self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
             

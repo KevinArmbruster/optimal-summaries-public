@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 import csv
 from tqdm import tqdm
 from time import sleep
@@ -22,39 +21,6 @@ from models.helper import *
 from models.custom_losses import compute_loss
 
 
-class MultiplicativeInteractionLayer(nn.Module):
-    def __init__(self, in_features, in_features2, out_features):
-        super(MultiplicativeInteractionLayer, self).__init__()
-
-        self.bilinear = nn.Bilinear(in_features, in_features2, out_features)
-        self.linear1 = nn.Linear(in_features, out_features, bias=False)
-        self.linear2 = nn.Linear(in_features2, out_features, bias=False)
-
-    def forward(self, x, z):
-        output = self.bilinear(x, z) + self.linear1(x) + self.linear2(z)
-        return output
-
-
-class SelfAttention(nn.Module):
-    def __init__(self, input_dim):
-        super(SelfAttention, self).__init__()
-        self.input_dim = input_dim
-        self.query = nn.Linear(input_dim, input_dim)
-        self.key = nn.Linear(input_dim, input_dim)
-        self.value = nn.Linear(input_dim, input_dim)
-        self.softmax = nn.Softmax(dim=2)
-
-    def forward(self, x): # needs 3d mat, b t v
-        queries = self.query(x)
-        keys = self.key(x)
-        values = self.value(x)
-        scores = torch.bmm(queries, keys.transpose(1, 2)) / (self.input_dim ** 0.5)
-        attention = self.softmax(scores)
-        weighted = torch.bmm(attention, values)
-        # print("SA weighted, out:", weighted.shape, "in:", x.shape)
-        return weighted
-
-
 class CBM(nn.Module):
     def __init__(self, 
                 static_dim, 
@@ -65,7 +31,6 @@ class CBM(nn.Module):
                 use_indicators = True,
                 use_only_last_timestep = False,
                 use_grad_norm = False,
-                use_multiplicative_interactions = False,
                 use_summaries = True,
                 differentiate_cutoffs = True,
                 init_cutoffs_f = init_cutoffs_to_zero,
@@ -76,6 +41,7 @@ class CBM(nn.Module):
                 opt_weight_decay = 1e-5,
                 l1_lambda=1e-3,
                 cos_sim_lambda=1e-2,
+                ema_decay=0.9,
                 top_k = "",
                 top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
@@ -109,7 +75,6 @@ class CBM(nn.Module):
         self.use_indicators = use_indicators
         self.use_only_last_timestep = use_only_last_timestep
         self.use_grad_norm = use_grad_norm
-        self.use_multiplicative_interactions = use_multiplicative_interactions
         self.use_summaries = use_summaries
         
         self.differentiate_cutoffs = differentiate_cutoffs
@@ -122,6 +87,7 @@ class CBM(nn.Module):
         self.opt_weight_decay = opt_weight_decay
         self.l1_lambda = l1_lambda
         self.cos_sim_lambda = cos_sim_lambda
+        self.ema_decay = ema_decay
         
         self.top_k = top_k
         self.top_k_num = top_k_num
@@ -174,17 +140,7 @@ class CBM(nn.Module):
         
         # bottleneck layer
         # in B x T x V
-        if self.use_multiplicative_interactions == "MI":
-            dim = self.changing_dim * self.seq_len * 2 + self.static_dim + self.num_summaries * self.changing_dim
-            self.bottleneck = MultiplicativeInteractionLayer(dim, dim, self.num_concepts)
-            
-        elif self.use_multiplicative_interactions == "SA":
-            self._self_attention = SelfAttention(2 * self.seq_len + self.num_summaries + self.static_dim)
-            self._linear = nn.LazyLinear(self.num_concepts)
-            self.bottleneck = nn.Sequential(self._self_attention, nn.Flatten(), self._linear)
-            
-        else:
-            self.bottleneck = nn.LazyLinear(self.num_concepts) # self.weight_parser.num_weights
+        self.bottleneck = LazyLinearWithMask(self.num_concepts) # self.weight_parser.num_weights
         # -> B x T x C
         
         # prediction task
@@ -195,7 +151,12 @@ class CBM(nn.Module):
         self.to(device=self.device)
         # self.deactivate_bottleneck_weights_if_top_k()
         return
-        
+    
+    def update_ema_gradients(self):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                layer.update_ema_gradient()
+    
     def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
         if top_k:
             self.top_k = top_k
@@ -241,37 +202,13 @@ class CBM(nn.Module):
         # Encodes the patient_batch, then computes the forward.
         summaries = calculate_summaries(self, time_dependent_vars, indicators, self.use_indicators)
         
-        if self.use_multiplicative_interactions == "MI":
-            input = get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+        input = get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
+        
+        if self.use_summaries:
             summaries2d = summaries.reshape(summaries.size(0), -1)
             input = torch.cat([input, summaries2d], axis=1)
-            
-            bottleneck = self.bottleneck(input, input)
-            
-        elif self.use_multiplicative_interactions == "SA":
-            if self.use_indicators:
-                input = torch.cat([time_dependent_vars, indicators], axis=1) # cat along time instead of var
-            else:
-                input = time_dependent_vars
-            input = rearrange(input, "b t v -> b v t")
-            
-            if not torch.equal(static_vars, torch.empty(0, device=self.device)):
-                # static vars are concatinated along time, for each var, similar to summaries
-                static_vars = static_vars.unsqueeze(1) # b x 1 x 8
-                static_vars = static_vars.expand(-1, input.size(1), -1) # -1 => unchanged
-            
-            input = torch.cat([input, static_vars, summaries], axis=-1)
-            
-            bottleneck = self.bottleneck(input)
-            
-        else:
-            input = get_time_feat_2d(time_dependent_vars, indicators, static_vars, self.use_only_last_timestep, self.use_indicators)
-            
-            if self.use_summaries:
-                summaries2d = summaries.reshape(summaries.size(0), -1)
-                input = torch.cat([input, summaries2d], axis=1)
-            
-            bottleneck = self.bottleneck(input)
+        
+        bottleneck = self.bottleneck(input)
         
         activation = self.sigmoid_layer(bottleneck)
         return self.layer_output(activation)

@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.nn.functional import binary_cross_entropy_with_logits, cross_entropy, mse_loss, cosine_similarity
 import csv
 from tqdm import tqdm
 from time import sleep
@@ -43,6 +42,7 @@ class CBM(nn.Module):
                 opt_weight_decay = 1e-5,
                 l1_lambda=1e-3,
                 cos_sim_lambda=1e-2,
+                ema_decay=0.9,
                 top_k = '',
                 top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
@@ -89,6 +89,7 @@ class CBM(nn.Module):
         self.opt_weight_decay = opt_weight_decay
         self.l1_lambda = l1_lambda
         self.cos_sim_lambda = cos_sim_lambda
+        self.ema_decay = ema_decay
         
         self.top_k = top_k
         self.top_k_num = top_k_num
@@ -145,21 +146,21 @@ class CBM(nn.Module):
         if self.use_summaries_for_atomics:
             # concat summaries to patient_batch during forward
             # in B x V x (T + Summaries)
-            self.layer_time_to_atomics = nn.LazyLinear(self.num_atomics) # in T_and_summaries
+            self.layer_time_to_atomics = LazyLinearWithMask(self.num_atomics) # in T_and_summaries
             # -> B x V x A
             self.flatten = nn.Flatten()
             # -> B x V*A
-            self.layer_to_concepts = nn.LazyLinear(self.num_concepts)
+            self.layer_to_concepts = LazyLinearWithMask(self.num_concepts)
             # -> B x C
         
         elif not self.use_summaries_for_atomics:
             # in B x V x T
-            self.layer_time_to_atomics = nn.LazyLinear(self.num_atomics)
+            self.layer_time_to_atomics = LazyLinearWithMask(self.num_atomics)
             # -> B x V x A
             self.flatten = nn.Flatten()
             # concat summaries to atomics during forward
             # -> B x (V*A + Summaries)
-            self.layer_to_concepts = nn.LazyLinear(self.num_concepts)
+            self.layer_to_concepts = LazyLinearWithMask(self.num_concepts)
             # -> B x C
         
         self.layer_output = nn.Linear(self.num_concepts, self.output_dim)
@@ -167,12 +168,25 @@ class CBM(nn.Module):
         
         self.regularized_layers = [self.layer_time_to_atomics, self.layer_to_concepts]
         
+        self.ema_gradients = {}
+        for name, param in self.named_parameters():
+            self.ema_gradients[name] = None
+        
         self.to(device=self.device)
         # self.deactivate_bottleneck_weights_if_top_k()
         return
+    
+    def update_ema_gradients(self):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                layer.update_ema_gradient()
         
-    def deactivate_bottleneck_weights_if_top_k(self):
-        if (self.top_k != ''):
+    def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
+        if top_k:
+            self.top_k = top_k
+            self.top_k_num = top_k_num
+        
+        if self.top_k:
             # init weights, needed with lazy layers
             self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
             
@@ -180,13 +194,14 @@ class CBM(nn.Module):
             csvreader = csv.reader(file)
             header = next(csvreader)
             
+            top_k_layer = []
             top_k_concepts = []
             top_k_inds = []
             i = 0
             
             for row in csvreader:
                 if (i < self.top_k_num):
-                    top_k_concepts.append(int(row[1]))
+                    top_k_layer.append(int(row[1]))
                     top_k_concepts.append(int(row[2]))
                     top_k_inds.append(int(row[3]))
                     i+=1
