@@ -12,7 +12,7 @@ from models.models_original import CBM
 from tqdm import tqdm
 from torchmetrics import Metric
 from collections import defaultdict
-from models.helper import extract_to
+from models.helper import *
 from models.custom_losses import compute_loss
 
 
@@ -94,7 +94,7 @@ def compute_importance(model, data_loader, p_weight, save_model_path, max_epochs
     return self.val_losses[-1]
 
 
-def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None):
+def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None, path = None):
     optimize_metric.reset()
     FEATURE_BUDGET = np.sum([10 * layer.out_features for layer in layers_to_prune])
     
@@ -178,5 +178,8 @@ def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module],
 
                 pbar.set_postfix(pbar_postfix)
                 pbar.update()
-                
-    return pd.DataFrame(results)
+    
+    res = pd.DataFrame(results)
+    if path:
+        write_df_2_csv(path, res)
+    return res 

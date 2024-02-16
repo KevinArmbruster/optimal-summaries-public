@@ -1,142 +1,74 @@
-import os
+
+import sys
+sys.path.append('..')
+
+
 import argparse
-import csv
 import numpy as np
 import pandas as pd
 import torch
+import random
+import csv
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.preprocessing import StandardScaler, RobustScaler
+import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
-from torchmetrics.classification import BinaryAUROC, BinaryAccuracy
+from torchmetrics.classification import AUROC, Accuracy, ConfusionMatrix, F1Score
+import os, subprocess, gc, time, datetime
+from itertools import product
 
-from models import CBM
-from param_initializations import *
-from preprocess_helpers import myPreprocessed
-from optimization_strategy import greedy_forward_selection
+import models.models_original as models_original
+import models.models_3d_atomics as models_3d_atomics
+import models.models_3d as models_3d
+from vasopressor.preprocess_helpers import load_and_create_MIMIC_dataloader
+from models.helper import *
+from models.param_initializations import *
+from models.optimization_strategy import greedy_forward_selection, get_top_features_per_concept
 
-def tensor_wrap(x, klass=torch.Tensor):
-    return x if 'torch' in str(type(x)) else klass(x)
+device = get_free_gpu()
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--split_random_state', type=int, default=1)
-parser.add_argument('--dir', type=str, default='')
+parser.add_argument('--dir', type=str, default='/workdir/optimal-summaries-public/_models/vasopressor/original_new')
 parser.add_argument('--n_concepts', type=int, default=4)
 FLAGS = parser.parse_args()
 
-
-# device = torch.device("cuda:0")  # Uncomment this to run on GPU
-torch.cuda.get_device_name(0)
-torch.cuda.is_available()
-torch.set_default_tensor_type('torch.cuda.FloatTensor')
+random_seed = FLAGS.split_random_state
 
 # prep data
-X_np, Y_logits, changing_vars, _ = myPreprocessed()
+train_loader, val_loader, test_loader, class_weights, num_classes, changing_vars, static_names, seq_len = load_and_create_MIMIC_dataloader(output_dim = 2, batch_size = 512, random_state = random_seed)
 
-# train-test-split
-torch.set_printoptions(sci_mode=False)
-X_train, X_test, y_train, y_test = train_test_split(X_np, Y_logits, test_size = 0.15, random_state = FLAGS.split_random_state, stratify = Y_logits)
 
-# train-val split
-X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size = 0.20, random_state = FLAGS.split_random_state, stratify = y_train)
+experiment_folder = FLAGS.dir
+experiment_top_k_folder = add_subfolder(experiment_folder)
+makedir(experiment_top_k_folder)
 
-# X_pt = Variable(tensor_wrap(X_np)).cuda()
+config_original = {
+    "n_concepts": 4,
+    "use_indicators": True,
+}
 
-pos_prop = np.mean(np.array(Y_logits)[:, 1])
+model_path = get_filename_from_dict(experiment_folder, config_original)
 
-p_weight = torch.Tensor([1 / (1 - pos_prop), 1 / pos_prop]).cuda()
+set_seed(random_seed)
 
-X_train_pt = Variable(tensor_wrap(X_train)).cuda()
-y_train_pt = Variable(tensor_wrap(y_train, torch.FloatTensor)).cuda()
-
-X_val_pt = Variable(tensor_wrap(X_val)).cuda()
-y_val_pt = Variable(tensor_wrap(y_val, torch.FloatTensor)).cuda()
-
-X_test_pt = Variable(tensor_wrap(X_test)).cuda()
-y_test_pt = Variable(tensor_wrap(y_test, torch.FloatTensor)).cuda()
-
-batch_size = 256
-
-train_dataset = TensorDataset(X_train_pt, y_train_pt)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
-
-val_dataset = TensorDataset(X_val_pt, y_val_pt)
-val_loader = DataLoader(val_dataset, batch_size = X_val_pt.shape[0], shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
-
-test_dataset = TensorDataset(X_test_pt, y_test_pt)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=0, generator=torch.Generator(device='cuda'))
-
-seq_len = X_np.shape[1]
+seq_len = seq_len
 changing_dim = len(changing_vars)
-input_dim = X_np.shape[2]
+static_dim = len(static_names)
+
+model = models_original.CBM(**config_original, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=2, device=device)
+model.fit(train_loader, val_loader, p_weight=class_weights.to(device), save_model_path=model_path.format(**config_original, seed = random_seed), max_epochs=10000)
+
+evaluate_classification(model, test_loader, num_classes=num_classes, device=device)
 
 
-experiment_folder = FLAGS.dir or "/workdir/optimal-summaries-public/_models/mimic-iii/vasopressor/"
-experiment_top_k_folder = os.path.join(experiment_folder, "top-k/")
-if not os.path.exists(experiment_top_k_folder):
-    os.makedirs(experiment_top_k_folder)
-
-
-n_concepts = FLAGS.n_concepts
-
-# get top features for a set number of concepts
-topkinds = []
-with open(experiment_top_k_folder + 'topkindsr{}c{}.csv'.format(FLAGS.split_random_state, n_concepts), mode ='r')as file:
-    # reading the CSV file
-    csvFile = csv.reader(file)
-    for row in csvFile:
-        topkinds.append(np.array(list(map(int, row))))
-
-
-# run experiment
-file = open(experiment_folder + 'bottleneck_r{}_c{}_gridsearch.csv'.format(FLAGS.split_random_state, n_concepts))
-csvreader = csv.reader(file)
-header = next(csvreader)
-bottleneck_row = []
-for row in csvreader:
-    if row[3]=="0.001" and row[4]=="0.01":
-        bottleneck_row = np.array(row).astype(float)  
-# format hyperparameters for csv reader
-row=[int(el) if el >= 1 else el for el in bottleneck_row]
-row=[0 if el == 0 else el for el in bottleneck_row]
-
-
-set_seed(FLAGS.split_random_state)
-logregbottleneck = CBM(input_dim, 
-                                                                        changing_dim,
-                                                                        9,                     
-                                                                        n_concepts,
-                                                                        True,
-                                                                        init_cutoffs_to_zero, 
-                                                                        init_rand_lower_thresholds, 
-                                                                        init_rand_upper_thresholds,
-                                                                        cutoff_times_temperature=1.0,
-                                                                        cutoff_times_init_values=None,
-                                                                        opt_lr = row[1],
-                                                                        opt_weight_decay = row[2],
-                                                                        l1_lambda=row[3],
-                                                                        cos_sim_lambda = row[4]
-                                                                        )
-logregbottleneck.cuda()
-
-logregbottleneck.fit(train_loader, val_loader, p_weight, 
-                     save_model_path = experiment_folder + "/bottleneck_r{}_c{}_optlr_{}_optwd_{}_l1lambda_{}_cossimlambda_{}.pt".format(FLAGS.split_random_state,int(row[0]),row[1],row[2],row[3],row[4]), 
-                     max_epochs=10, 
-                     save_every_n_epochs=10)
-
-
-auroc_metric = BinaryAUROC().cuda()
-acc_metric = BinaryAccuracy().cuda()
 results = greedy_forward_selection(auroc_metric, test_loader, topkinds, logregbottleneck, track_metrics=[acc_metric])
 
 
 filename = experiment_top_k_folder + "bottleneck_r{}_c{}_topkinds.csv".format(FLAGS.split_random_state, n_concepts)
 
-# writing to csv file
-with open(filename, 'w') as csvfile: 
-    # creating a csv writer object 
-    csvwriter = csv.writer(csvfile)
-    csvwriter.writerow(results.columns)
-    # writing the data rows 
-    for row in results.itertuples(index=False):
-        csvwriter.writerow(list(row))
+write

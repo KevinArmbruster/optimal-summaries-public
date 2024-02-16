@@ -2,6 +2,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 import csv
+import os, subprocess
 import torch
 from torch.nn.functional import normalize
 from torchmetrics.classification import AUROC, Accuracy, ConfusionMatrix, F1Score
@@ -249,8 +250,29 @@ def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, seq_len 
     parser.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)
     return
 
+def makedir(path):
+    directory = os.path.dirname(path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+def add_subfolder(path, name="/top-k/"):
+    dir, file = os.path.split(path)
+    path = dir + name + file
+    return path
+
 def write_df_2_csv(path: str, df: pd.DataFrame):
+    makedir(path)
     df.to_csv(path, header=True, index=False)
 
 def read_df_from_csv(path):
     return pd.read_csv(path)
+
+def get_free_gpu():
+    gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
+    device = torch.device(f'cuda:{gpu_id}') if torch.cuda.is_available else torch.device('cpu')
+    print("current device", device)
+    return device
+
+def get_filename_from_dict(folder, config):
+    model_path = folder + "".join([f"{key}_{{{key}}}_" for key in config.keys()]) + "seed_{seed}.pt"
+    return model_path

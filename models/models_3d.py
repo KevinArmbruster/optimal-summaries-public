@@ -22,7 +22,7 @@ from models.helper import *
 from models.custom_losses import compute_loss
 
 
-class CBM_3d(nn.Module):
+class CBM(nn.Module):
     def __init__(self, 
                 static_dim, 
                 changing_dim, 
@@ -64,7 +64,7 @@ class CBM_3d(nn.Module):
             cos_sim_lambda (float): lambda value for cosine similarity regularization
             
         """
-        super(CBM_3d, self).__init__()
+        super(CBM, self).__init__()
         
         self.static_dim = static_dim
         self.changing_dim = changing_dim
@@ -99,7 +99,7 @@ class CBM_3d(nn.Module):
 
     
     def create_model(self):
-        self.sigmoid = nn.Sigmoid()
+        self.sigmoid_layer = nn.Sigmoid()
         
         # activation function to convert output into probabilities
         # not needed during training as pytorch losses are optimized and include sigmoid / softmax
@@ -138,13 +138,13 @@ class CBM_3d(nn.Module):
         # bottleneck layer
         if self.encode_time_dim:
             # in B x V x T
-            self.bottleneck = nn.Linear(self.seq_len, self.num_concepts)
+            # in_dim = 2 * self.changing_dim + self.static_dim
+            self.bottleneck = nn.LazyLinear(self.num_concepts)
             # -> B x V x C
             
         else: # encode variate dim
             # in B x T x V
-            bottle_in_dim = 2 * self.changing_dim + self.static_dim + self.changing_dim * self.num_summaries
-            self.bottleneck = nn.Linear(bottle_in_dim, self.num_concepts)
+            self.bottleneck = nn.LazyLinear(self.num_concepts)
             # -> B x T x C
         
         self.flatten = nn.Flatten()
@@ -203,13 +203,13 @@ class CBM_3d(nn.Module):
             summaries = None
         
         input = create_3d_input_as_b_v_t(time_dependent_vars=time_dependent_vars, indicators=indicators, static_vars=static_vars, summaries=summaries, use_indicators=self.use_indicators)
-
+                
         if not self.encode_time_dim:
             input = rearrange(input, "b v t -> b t v")
         
         out = self.bottleneck(input)
         out = self.flatten(out)
-        out = self.sigmoid(out)
+        out = self.sigmoid_layer(out)
         return self.layer_output(out)
     
     def forward_probabilities(self, patient_batch):
