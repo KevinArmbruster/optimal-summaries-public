@@ -95,9 +95,20 @@ def compute_importance(model, val_loader, p_weight, save_model_path, max_epochs=
     return
 
 
-def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, device, track_metrics: dict[str, Metric] = None, path = None):
+def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, track_metrics: dict[str, Metric] = None, save_path = None):
+    # try loading
+    if save_path:
+        try:
+            result = read_df_from_csv(save_path)
+            print("Successfully loaded greedy search results!")
+            return result
+        except:
+            pass
+    
+    # do search
     optimize_metric.reset()
     FEATURE_BUDGET = np.sum([10 * layer.out_features for layer in layers_to_prune])
+    device = model.device
     
     def setup(layer, top_k):
         condition = torch.zeros(layer.weight.shape, dtype=torch.bool).to(device)
@@ -181,6 +192,6 @@ def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module],
                 pbar.update()
     
     res = pd.DataFrame(results)
-    if path:
-        write_df_2_csv(path, res)
+    if save_path:
+        write_df_2_csv(save_path, res)
     return res 

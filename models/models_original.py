@@ -42,7 +42,7 @@ class CBM(nn.Module):
                 l1_lambda=1e-3,
                 cos_sim_lambda=1e-2,
                 ema_decay=0.9,
-                top_k = "",
+                top_k = None,
                 top_k_num = np.inf,
                 task_type = TaskType.CLASSIFICATION,
                 device = 'cuda',
@@ -157,41 +157,33 @@ class CBM(nn.Module):
             for layer in self.regularized_layers:
                 layer.update_ema_gradient()
     
+    def clear_all_weight_masks(self):
+        for layer in self.regularized_layers:
+            layer.clear_weight_mask()
+    
     def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
-        if top_k:
+        if top_k is not None:
             self.top_k = top_k
             self.top_k_num = top_k_num
         
-        if self.top_k:
+        if self.top_k is not None:
+            if isinstance(self.top_k, str):
+                # if path, load df
+                self.top_k = read_df_from_csv(self.top_k)
+            
             # init weights, needed with lazy layers
             self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
             
-            file = open(self.top_k)
-            csvreader = csv.reader(file)
-            header = next(csvreader)
-            
-            top_k_concepts = []
-            top_k_inds = []
-            i = 0
-            
-            for row in csvreader:
-                if (i < self.top_k_num):
-                    top_k_concepts.append(int(row[1]))
-                    top_k_concepts.append(int(row[2]))
-                    top_k_inds.append(int(row[3]))
-                    i+=1
-                else:
-                    break
-            
-            self.weight_masks = []
             for i, layer in enumerate(self.regularized_layers):
-                weight_mask = torch.zeros(layer.weight.shape, dtype=torch.bool, device=self.device)
+                layer_config = self.top_k[self.top_k["Layer"] == i]
+                weight_mask = torch.zeros(layer.weight.shape, dtype=torch.bool, device=layer.weight.device)
                 
-                for concept_id, feat_id in zip(top_k_concepts, top_k_inds):
+                for j, (concept_id, feat_id) in enumerate(zip(layer_config["Concept"], layer_config["Feature"]), 1):
                     weight_mask[concept_id][feat_id] = True
+                    if j == self.top_k_num:
+                        break
                 
-                self.weight_masks.append(weight_mask)
-                layer.weight = torch.nn.Parameter(layer.weight.where(weight_mask, torch.tensor(0.0, device=self.device)))
+                layer.set_weight_mask(weight_mask)
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
@@ -261,11 +253,7 @@ class CBM(nn.Module):
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
-
-        self.earlyStopping.best_state = checkpoint
-        self.earlyStopping.min_max_criterion = min(checkpoint['val_losses'])
         
-        self.deactivate_bottleneck_weights_if_top_k()
         sleep(0.5)
         
         return True
@@ -296,9 +284,6 @@ class CBM(nn.Module):
         self.earlyStopping = EarlyStopping(patience=patience)
         self._load_model(save_model_path)
         
-        if self.earlyStopping.best_state != None:
-            return self.val_losses[-1]
-        
         epochs = range(self.curr_epoch+1, max_epochs)
         
         with tqdm(total=len(epochs), unit=' epoch') as pbar:
@@ -323,16 +308,6 @@ class CBM(nn.Module):
 
                     train_loss += loss * X_time.size(0)
                     
-                    # for name, param in self.named_parameters():
-                    #     isnan = param.grad is None or torch.isnan(param.grad).any()
-                    #     if isnan:
-                    #         print(f"Parameter: {name}, Gradient NAN? {isnan}")
-                    #         return
-                    
-                    if (self.top_k != ''):
-                        for layer, weight_mask in zip(self.regularized_layers, self.weight_masks):
-                            layer.weight.grad = torch.nn.Parameter(layer.weight.grad.where(weight_mask, torch.tensor(0.0, device=self.device)))
-
                     self.optimizer.step()
                 
                 train_loss = train_loss / len(train_loader.sampler)

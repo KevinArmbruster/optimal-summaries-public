@@ -80,18 +80,20 @@ def plot_grad_flow(named_parameters):
     plt.show()
 
 
-def visualize_top100_weights_per_channel(layer):
+def visualize_top100_weights_per_channel(layer, top_k=100):
     abs_weight = layer.weight.detach().cpu().numpy()
     abs_weight = np.abs(abs_weight)
+    
+    top_k = min(top_k, abs_weight.shape[1])
     
     max_y = np.max(abs_weight)
 
     for c in range(abs_weight.shape[0]):
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        inds = np.argsort(-abs_weight[c])[:100]
-        ax.bar(np.arange(1,101), abs_weight[c][inds])
-        ax.set_xlabel("Top 100 features")
+        inds = np.argsort(-abs_weight[c])[:top_k]
+        ax.bar(np.arange(1,top_k+1), abs_weight[c][inds])
+        ax.set_xlabel(f"Top {top_k} features")
         ax.set_ylabel("abs value of feature coefficient")
         ax.set_ylim(0, max_y)
         plt.show()
@@ -205,9 +207,9 @@ def evaluate_classification(model, dataloader, num_classes = 2, average = "macro
     accuracy_metric.reset()
     f1_metric.reset()
     
-    print("AUC macro", auc)
-    print("ACC macro", acc)
-    print(" F1 macro", f1)
+    print(f"AUC macro {auc:.3f}")
+    print(f"ACC macro {acc:.3f}")
+    print(f" F1 macro {f1:.3f}")
     
     return auc, acc, f1
 
@@ -281,14 +283,29 @@ def get_filename_from_dict(folder, config):
     model_path = folder + "".join([f"{key}_{{{key}}}_" for key in config.keys()]) + "seed_{seed}.pt"
     return model_path
 
-def visualize_optimization_results(optimization_results, auc, acc, f1):
-    plt.plot(optimization_results["auc"], label = f"AUC {optimization_results['auc'].values[-1]:.3f}")
-    plt.plot(optimization_results["acc"], label = f"ACC {optimization_results['acc'].values[-1]:.3f}")
-    plt.plot(optimization_results["f1"], label = f"F1 {optimization_results['f1'].values[-1]:.3f}")
+def visualize_optimization_results(model, val_loader, test_loader, greedy_results):
+    model.clear_all_weight_masks()
 
-    plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (pre) {auc:.3f}")
-    plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (pre) {acc:.3f}")
-    plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (pre) {f1:.3f}")
+    plt.plot(greedy_results["auc"], label = f"AUC {greedy_results['auc'].values[-1]:.3f}")
+    plt.plot(greedy_results["acc"], label = f"ACC {greedy_results['acc'].values[-1]:.3f}")
+    plt.plot(greedy_results["f1"], label = f"F1 {greedy_results['f1'].values[-1]:.3f}")
+
+    auc, acc, f1 = evaluate_classification(model, val_loader)
+    plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (before) {auc:.3f}")
+    plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (before) {acc:.3f}")
+    plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (before) {f1:.3f}")
+
+    auc, acc, f1 = evaluate_classification(model, test_loader)
+    # plt.axhline(y=auc, color='blue', linestyle=':', label=f"AUC (pre, test) {auc:.3f}")
+    # plt.axhline(y=acc, color='orange', linestyle=':', label=f"ACC (pre, test) {acc:.3f}")
+    # plt.axhline(y=f1, color='green', linestyle=':', label=f"F1 (pre, test) {f1:.3f}")
+
+    model.deactivate_bottleneck_weights_if_top_k(greedy_results)
+
+    auc, acc, f1 = evaluate_classification(model, test_loader)
+    plt.axhline(y=auc, color='blue', linestyle='-.', label=f"AUC (after, test set) {auc:.3f}")
+    plt.axhline(y=acc, color='orange', linestyle='-.', label=f"ACC (after, test set) {acc:.3f}")
+    plt.axhline(y=f1, color='green', linestyle='-.', label=f"F1 (after, test set) {f1:.3f}")
 
     plt.xlabel('Num Features')
     plt.ylabel('Metrics')
@@ -298,14 +315,18 @@ def visualize_optimization_results(optimization_results, auc, acc, f1):
     plt.show()
 
 
-class LazyLinearWithMask(torch.nn.LazyLinear):
+
+class LazyLinearWithMask(nn.LazyLinear):
     def __init__(self, out_features, bias=True, weight_mask=None, ema_decay=0.9):
         super().__init__(out_features, bias)
+        self.cls_to_become = LazyLinearWithMask
         self.weight_mask = weight_mask
         self.ema_gradient = None
         self.ema_decay = ema_decay
     
     def set_weight_mask(self, weight_mask):
+        assert self.weight_mask is None or self.weight_mask.shape == self.weight.shape
+        assert self.weight_mask is None or self.weight_mask.device == self.weight.device
         self.weight_mask = weight_mask
     
     def clear_weight_mask(self):
