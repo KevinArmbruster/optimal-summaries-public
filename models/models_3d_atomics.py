@@ -168,15 +168,15 @@ class CBM(nn.Module):
         
         self.regularized_layers = [self.layer_time_to_atomics, self.layer_to_concepts]
         
-        self.ema_gradients = {}
+        self.ema_gradient = {}
         for name, param in self.named_parameters():
-            self.ema_gradients[name] = None
+            self.ema_gradient[name] = None
         
         self.to(device=self.device)
         # self.deactivate_bottleneck_weights_if_top_k()
         return
     
-    def update_ema_gradients(self):
+    def update_ema_gradient(self):
         with torch.no_grad():
             for layer in self.regularized_layers:
                 layer.update_ema_gradient()
@@ -309,6 +309,7 @@ class CBM(nn.Module):
     
     def try_load_else_fit(self, *args, **kwargs):
         if self._load_model(kwargs.get('save_model_path')):
+            self.save_model_path = kwargs.get('save_model_path')
             return
         else:
             return self.fit(*args, **kwargs)
@@ -325,6 +326,9 @@ class CBM(nn.Module):
         
         rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=max_epochs)
         rtpt.start()
+        
+        p_weight = p_weight.to(self.device)
+        self.save_model_path = save_model_path
         
         self.train_losses = []
         self.val_losses = []

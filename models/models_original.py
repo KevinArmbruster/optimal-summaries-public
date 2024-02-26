@@ -152,10 +152,33 @@ class CBM(nn.Module):
         # self.deactivate_bottleneck_weights_if_top_k()
         return
     
-    def update_ema_gradients(self):
+    def update_ema_gradient(self):
         with torch.no_grad():
             for layer in self.regularized_layers:
                 layer.update_ema_gradient()
+    
+    def clear_ema_gradient(self):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                layer.ema_gradient = None
+    
+    def mask_by_weight_magnitude(self, percent):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                weight_mask, bias_mask = mask_smallest_magnitude(layer.weight, percent)
+                layer.set_weight_mask(weight_mask)
+    
+    def mask_by_gradient_magnitude(self, percent):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                weight_mask, bias_mask = mask_smallest_magnitude(layer.ema_gradient, percent)
+                layer.set_weight_mask(weight_mask)
+    
+    def mask_shrinking_weights(self):
+        with torch.no_grad():
+            for layer in self.regularized_layers:
+                weight_mask, bias_mask = mask_shrinking_weights(layer)
+                layer.set_weight_mask(weight_mask)
     
     def clear_all_weight_masks(self):
         for layer in self.regularized_layers:
@@ -234,18 +257,21 @@ class CBM(nn.Module):
     def argmax_to_preds(self, y_probs):
         return torch.argmax(y_probs, dim=1)
         
-    def _load_model(self, path, print_=True):
+    def _load_model(self, path_or_checkpoint, print_=True):
         """
         Args:
             path (str): filepath to the model
         """
         try:
-            checkpoint = torch.load(path)
+            if isinstance(path_or_checkpoint, str):
+                checkpoint = torch.load(path_or_checkpoint)
+            else:
+                checkpoint = path_or_checkpoint
+                
+            if print_:
+                print("Loaded model from " + path_or_checkpoint)
         except:
             return False
-        
-        if print_:
-            print("Loaded model from " + path)
         
         self.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -260,6 +286,7 @@ class CBM(nn.Module):
     
     def try_load_else_fit(self, *args, **kwargs):
         if self._load_model(kwargs.get('save_model_path')):
+            self.save_model_path = kwargs.get('save_model_path')
             return
         else:
             return self.fit(*args, **kwargs)
@@ -276,6 +303,9 @@ class CBM(nn.Module):
         
         rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=max_epochs)
         rtpt.start()
+        
+        p_weight = p_weight.to(self.device)
+        self.save_model_path = save_model_path
         
         self.train_losses = []
         self.val_losses = []
@@ -297,7 +327,7 @@ class CBM(nn.Module):
                     X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
                     
                     y_pred = self(X_time, X_ind, X_static)
-
+                    
                     loss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
                     
                     self.optimizer.zero_grad(set_to_none=True)
@@ -305,7 +335,9 @@ class CBM(nn.Module):
                     
                     if self.use_grad_norm:
                         normalize_gradient_(self.parameters(), self.use_grad_norm)
-
+                    
+                    self.update_ema_gradient()
+                    
                     train_loss += loss * X_time.size(0)
                     
                     self.optimizer.step()
@@ -360,5 +392,7 @@ class CBM(nn.Module):
             
         if save_model_path and self.earlyStopping.best_state:
             torch.save(self.earlyStopping.best_state, save_model_path)
+        if self.earlyStopping.best_state:
+            self._load_model(self.earlyStopping.best_state)
         
         return self.val_losses[-1]

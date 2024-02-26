@@ -26,14 +26,14 @@ import models.models_3d as models_3d
 from vasopressor.preprocess_helpers import load_and_create_MIMIC_dataloader
 from models.helper import *
 from models.param_initializations import *
-from models.optimization_strategy import greedy_forward_selection, get_top_features_per_concept
+from models.optimization_strategy import *
 
 device = get_free_gpu()
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--split_random_state', type=int, default=1)
-parser.add_argument('--dir', type=str, default='/workdir/optimal-summaries-public/_models/vasopressor/original_new')
+parser.add_argument('--dir', type=str, default='/workdir/optimal-summaries-public/_models/vasopressor/original')
 parser.add_argument('--n_concepts', type=int, default=4)
 FLAGS = parser.parse_args()
 

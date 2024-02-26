@@ -1,7 +1,7 @@
 from typing import List
 import numpy as np
 import pandas as pd
-import csv
+import random
 import os, subprocess
 import torch
 import torch.nn as nn
@@ -274,7 +274,8 @@ def read_df_from_csv(path):
     return pd.read_csv(path)
 
 def get_free_gpu():
-    gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
+    # gpu_id = int(subprocess.check_output('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1 | head -n 1 | xargs', shell=True, text=True))
+    gpu_id = 15
     device = torch.device(f'cuda:{gpu_id}') if torch.cuda.is_available else torch.device('cpu')
     print("current device", device)
     return device
@@ -290,11 +291,13 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
     plt.plot(greedy_results["acc"], label = f"ACC {greedy_results['acc'].values[-1]:.3f}")
     plt.plot(greedy_results["f1"], label = f"F1 {greedy_results['f1'].values[-1]:.3f}")
 
+    print("Validation set - Before Pruning")
     auc, acc, f1 = evaluate_classification(model, val_loader)
     plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (before) {auc:.3f}")
     plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (before) {acc:.3f}")
     plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (before) {f1:.3f}")
 
+    print("Test set - Before Pruning")
     auc, acc, f1 = evaluate_classification(model, test_loader)
     # plt.axhline(y=auc, color='blue', linestyle=':', label=f"AUC (pre, test) {auc:.3f}")
     # plt.axhline(y=acc, color='orange', linestyle=':', label=f"ACC (pre, test) {acc:.3f}")
@@ -302,6 +305,40 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
 
     model.deactivate_bottleneck_weights_if_top_k(greedy_results)
 
+    print("Test set - After Pruning")
+    auc, acc, f1 = evaluate_classification(model, test_loader)
+    plt.axhline(y=auc, color='blue', linestyle='-.', label=f"AUC (after, test set) {auc:.3f}")
+    plt.axhline(y=acc, color='orange', linestyle='-.', label=f"ACC (after, test set) {acc:.3f}")
+    plt.axhline(y=f1, color='green', linestyle='-.', label=f"F1 (after, test set) {f1:.3f}")
+
+    plt.xlabel('Num Features')
+    plt.ylabel('Metrics')
+    plt.title('Greedy Selection')
+
+    plt.legend()
+    plt.show()
+def visualize_optimization_results(model, val_loader, test_loader, greedy_results):
+    model.clear_all_weight_masks()
+
+    plt.plot(greedy_results["auc"], label = f"AUC {greedy_results['auc'].values[-1]:.3f}")
+    plt.plot(greedy_results["acc"], label = f"ACC {greedy_results['acc'].values[-1]:.3f}")
+    plt.plot(greedy_results["f1"], label = f"F1 {greedy_results['f1'].values[-1]:.3f}")
+
+    print("Validation set - Before Pruning")
+    auc, acc, f1 = evaluate_classification(model, val_loader)
+    plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (before) {auc:.3f}")
+    plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (before) {acc:.3f}")
+    plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (before) {f1:.3f}")
+
+    print("Test set - Before Pruning")
+    auc, acc, f1 = evaluate_classification(model, test_loader)
+    # plt.axhline(y=auc, color='blue', linestyle=':', label=f"AUC (pre, test) {auc:.3f}")
+    # plt.axhline(y=acc, color='orange', linestyle=':', label=f"ACC (pre, test) {acc:.3f}")
+    # plt.axhline(y=f1, color='green', linestyle=':', label=f"F1 (pre, test) {f1:.3f}")
+
+    model.deactivate_bottleneck_weights_if_top_k(greedy_results)
+
+    print("Test set - After Pruning")
     auc, acc, f1 = evaluate_classification(model, test_loader)
     plt.axhline(y=auc, color='blue', linestyle='-.', label=f"AUC (after, test set) {auc:.3f}")
     plt.axhline(y=acc, color='orange', linestyle='-.', label=f"ACC (after, test set) {acc:.3f}")
@@ -314,8 +351,114 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
     plt.legend()
     plt.show()
 
+def evaluate_greedy_selection(get_model, get_dataloader, greedy_result_path, n_experiments = 3):
+    metrics_df = pd.DataFrame(columns=["Seed", "Split", "Mask", "Finetuned", "AUC", "ACC", "F1"])
+
+    for random_seed in range(1, n_experiments+1):
+        set_seed(random_seed)
+        
+        model = get_model(random_seed)
+        greedy_results = read_df_from_csv(greedy_result_path.format(seed=random_seed))
+        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_seed)
+        
+        model.clear_all_weight_masks()
+        
+        metrics = evaluate_classification(model, val_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        # metrics_df.append({"Seed": random_seed, "Split": "val", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}, ignore_index=True)
+        metrics = evaluate_classification(model, test_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        # metrics_df.append({"Seed": random_seed, "Split": "test", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}, ignore_index=True)
+        
+        model.deactivate_bottleneck_weights_if_top_k(greedy_results)
+        
+        metrics = evaluate_classification(model, val_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics = evaluate_classification(model, test_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        
+        save_model_path = add_subfolder(model.save_model_path, "/finetuned/")
+        makedir(save_model_path)
+        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=save_model_path, max_epochs=10000, patience=10)
+        
+        metrics = evaluate_classification(model, val_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics = evaluate_classification(model, test_loader)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        
+    return metrics_df
 
 
+def plot_selected_weights(weight, top_k_inds, greedy_results, top_k=None, sorted=True, log_scale=True):
+    abs_weight = weight.detach().cpu().numpy()
+    abs_weight = np.abs(abs_weight)
+    
+    n_concepts = abs_weight.shape[0]
+    max_y = np.max(abs_weight)
+    
+    fig, axs = plt.subplots(n_concepts, figsize=(8, 2 * n_concepts))
+    
+    for c in range(n_concepts):
+        ax = axs[c]
+        
+        init_features_idx = top_k_inds[c]
+        selected_features_idx = greedy_results[greedy_results["Concept"] == c]["Feature"].to_list()
+        
+        min_weight = np.min(abs_weight[c][selected_features_idx])
+        max_weight = np.max(abs_weight[c][selected_features_idx])
+        
+        if top_k is None:
+            if sorted:
+                weight_idx = np.argsort(-abs_weight[c])
+            else:
+                weight_idx = range(abs_weight.shape[1])
+            
+            weight_idx = weight_idx[abs_weight[c][weight_idx] >= min_weight]
+        else:
+            if sorted:
+                weight_idx = np.argsort(-abs_weight[c])
+            else:
+                weight_idx = range(abs_weight.shape[1])
+            
+            top_k = max(top_k, abs_weight.shape[1])
+            weight_idx = weight_idx[:top_k]
+        
+        n_rel_feat = len(weight_idx)
+        
+        def getColor(idx):
+            if idx in selected_features_idx:
+                return "red"
+            elif idx in init_features_idx:
+                return "blue"
+            else:
+                return "gray"
+        
+        colors = [getColor(idx) for idx in weight_idx]
+        ax.bar(np.arange(1, len(weight_idx)+1), abs_weight[c][weight_idx], color=colors)
+        
+        ax.set_title(f"Initialized with {len(init_features_idx)}; selected {len(selected_features_idx)}; of total {len(abs_weight[c])})")
+        ax.set_xlabel(f"Top {n_rel_feat} features (descending by weight) (min={min_weight:.3f}) (max={max_weight:.3f})")
+        ax.set_ylabel(f"Concept {c}")
+        ax.set_ylim(0, max_y)
+        if log_scale:
+            ax.set_yscale('log')
+        
+        leg_handles = [plt.Rectangle((0,0),1,1, color=color) for color in ['red', 'blue', 'gray']]
+        leg_labels = ["Selected", "Initialization", "Neither"]
+        ax.legend(leg_handles, leg_labels)
+    
+    # plt.ylabel("abs value of feature coefficient")
+    plt.tight_layout()
+    plt.show()
+    
+def plot_losses(train_losses, val_losses):
+    plt.plot(train_losses, color="black", label="Train")
+    plt.plot(val_losses, color="green", label="Val")
+    plt.yscale("log")
+    plt.legend()
+    plt.show()
+    
+    
 class LazyLinearWithMask(nn.LazyLinear):
     def __init__(self, out_features, bias=True, weight_mask=None, ema_decay=0.9):
         super().__init__(out_features, bias)
@@ -336,7 +479,7 @@ class LazyLinearWithMask(nn.LazyLinear):
         if self.ema_gradient == None:
             self.ema_gradient = self.weight.grad.detach()
         else:
-            self.ema_gradients = self.ema_decay * self.ema_gradients + (1 - self.ema_decay) * self.weight.grad.detach()
+            self.ema_gradient = self.ema_decay * self.ema_gradient + (1 - self.ema_decay) * self.weight.grad.detach()
     
     def create_weight_mask_from_ema_gradient(self):
         pass
@@ -347,3 +490,38 @@ class LazyLinearWithMask(nn.LazyLinear):
         else:
             masked_weight = self.weight * self.weight_mask
             return F.linear(input, masked_weight, self.bias)
+
+
+def mask_smallest_magnitude(weight_tensor, percent=5):
+    flattened_weights = weight_tensor.flatten()
+    abs_sorted_weights, sorted_indices = torch.sort(torch.abs(flattened_weights))
+
+    percentile_idx = int(len(sorted_indices) * (percent / 100))
+    threshold_index = sorted_indices[:percentile_idx]
+
+    binary_mask = torch.ones_like(flattened_weights)
+    binary_mask[threshold_index] = 0
+
+    weight_mask = binary_mask.reshape(weight_tensor.shape)
+    bias_mask = torch.sum(weight_mask, dim=1)
+    bias_mask[bias_mask > 0] = 1
+
+    return weight_mask, bias_mask
+
+def mask_shrinking_weights(layer):
+    weight_mask = layer.ema_gradient * layer.weight.detach()
+    weight_mask = weight_mask > 0
+
+    bias_mask = torch.sum(weight_mask, dim=1)
+    bias_mask[bias_mask > 0] = 1
+
+    return weight_mask, bias_mask
+
+
+def set_seed(r):
+    # torch.backends.cudnn.deterministic = True
+    # torch.use_deterministic_algorithms(True)
+    random.seed(r)
+    torch.manual_seed(r)
+    torch.cuda.manual_seed(r)
+    np.random.seed(r)

@@ -51,50 +51,6 @@ def get_top_features_per_concept(layer) -> List[List[int]]:
     return top_k_inds
 
 
-def compute_importance(model, val_loader, p_weight, save_model_path, max_epochs=1, iterative_pruning_and_finetuning=False):    
-    rtpt = RTPT(name_initials='KA', experiment_name='Importance', max_iterations=max_epochs)
-    rtpt.start()
-    
-    with tqdm(total=max_epochs, unit=' epoch') as pbar:
-        for epoch in range(max_epochs):
-            model.train()
-            train_loss = 0
-
-            ### Train loop
-            for batch in val_loader:
-                X_time, X_ind, X_static, y_true = extract_to(batch, model.device)
-                
-                y_pred = model(X_time, X_ind, X_static)
-                
-                loss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=model.l1_lambda, cos_sim_lambda=model.cos_sim_lambda, regularized_layers=model.regularized_layers, task_type=model.task_type)
-                
-                model.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                
-                model.update_ema_gradients()
-                
-                train_loss += loss * X_time.size(0)
-                
-                # if (self.top_k != ''):
-                #     for layer, weight_mask in zip(self.regularized_layers, self.weight_masks):
-                #         layer.weight.grad = torch.nn.Parameter(layer.weight.grad.where(weight_mask, torch.tensor(0.0, device=self.device)))
-                
-                if iterative_pruning_and_finetuning:
-                    model.optimizer.step()
-            
-            train_loss = train_loss / len(val_loader.sampler)
-            
-            
-            pbar.set_postfix({'Train Loss': f'{train_loss.item():.5f}', 'Val Loss': f'{self.val_losses[-1]:.5f}', "Best Val Loss": f'{self.earlyStopping.min_max_criterion:.5f}'})
-            pbar.update()
-            rtpt.step(subtitle=f"loss={train_loss:2.2f}")
-        
-    if save_model_path:
-        torch.save(state, save_model_path)
-    
-    return
-
-
 def greedy_forward_selection(model: CBM, layers_to_prune: List[torch.nn.Module], top_k_inds: List[List[List[int]]], val_loader: DataLoader, optimize_metric: Metric, track_metrics: dict[str, Metric] = None, save_path = None):
     # try loading
     if save_path:

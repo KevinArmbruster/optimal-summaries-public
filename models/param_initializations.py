@@ -16,11 +16,3 @@ def init_rand_upper_thresholds(d):
 
 def init_rand_lower_thresholds(d):
     return np.random.rand(d) - 1
-
-def set_seed(r):
-    # torch.backends.cudnn.deterministic = True
-    # torch.use_deterministic_algorithms(True)
-    random.seed(r)
-    torch.manual_seed(r)
-    torch.cuda.manual_seed(r)
-    np.random.seed(r)
