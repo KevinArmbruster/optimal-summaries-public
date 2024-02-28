@@ -261,9 +261,9 @@ def makedir(path):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-def add_subfolder(path, name="/top-k/"):
+def add_subfolder(path, name="top-k"):
     dir, file = os.path.split(path)
-    path = dir + name + file
+    path = os.path.join(dir, name, file)
     return path
 
 def write_df_2_csv(path: str, df: pd.DataFrame):
@@ -280,43 +280,7 @@ def get_free_gpu():
     print("current device", device)
     return device
 
-def get_filename_from_dict(folder, config):
-    model_path = folder + "".join([f"{key}_{{{key}}}_" for key in config.keys()]) + "seed_{seed}.pt"
-    return model_path
-
-def visualize_optimization_results(model, val_loader, test_loader, greedy_results):
-    model.clear_all_weight_masks()
-
-    plt.plot(greedy_results["auc"], label = f"AUC {greedy_results['auc'].values[-1]:.3f}")
-    plt.plot(greedy_results["acc"], label = f"ACC {greedy_results['acc'].values[-1]:.3f}")
-    plt.plot(greedy_results["f1"], label = f"F1 {greedy_results['f1'].values[-1]:.3f}")
-
-    print("Validation set - Before Pruning")
-    auc, acc, f1 = evaluate_classification(model, val_loader)
-    plt.axhline(y=auc, color='blue', linestyle='--', label=f"AUC (before) {auc:.3f}")
-    plt.axhline(y=acc, color='orange', linestyle='--', label=f"ACC (before) {acc:.3f}")
-    plt.axhline(y=f1, color='green', linestyle='--', label=f"F1 (before) {f1:.3f}")
-
-    print("Test set - Before Pruning")
-    auc, acc, f1 = evaluate_classification(model, test_loader)
-    # plt.axhline(y=auc, color='blue', linestyle=':', label=f"AUC (pre, test) {auc:.3f}")
-    # plt.axhline(y=acc, color='orange', linestyle=':', label=f"ACC (pre, test) {acc:.3f}")
-    # plt.axhline(y=f1, color='green', linestyle=':', label=f"F1 (pre, test) {f1:.3f}")
-
-    model.deactivate_bottleneck_weights_if_top_k(greedy_results)
-
-    print("Test set - After Pruning")
-    auc, acc, f1 = evaluate_classification(model, test_loader)
-    plt.axhline(y=auc, color='blue', linestyle='-.', label=f"AUC (after, test set) {auc:.3f}")
-    plt.axhline(y=acc, color='orange', linestyle='-.', label=f"ACC (after, test set) {acc:.3f}")
-    plt.axhline(y=f1, color='green', linestyle='-.', label=f"F1 (after, test set) {f1:.3f}")
-
-    plt.xlabel('Num Features')
-    plt.ylabel('Metrics')
-    plt.title('Greedy Selection')
-
-    plt.legend()
-    plt.show()
+    
 def visualize_optimization_results(model, val_loader, test_loader, greedy_results):
     model.clear_all_weight_masks()
 
@@ -351,40 +315,36 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
     plt.legend()
     plt.show()
 
-def evaluate_greedy_selection(get_model, get_dataloader, greedy_result_path, n_experiments = 3):
-    metrics_df = pd.DataFrame(columns=["Seed", "Split", "Mask", "Finetuned", "AUC", "ACC", "F1"])
+def evaluate_greedy_selection(models, results, get_dataloader, random_seeds:List[int] = [1,2,3]):
+    metrics_df = pd.DataFrame(columns=["Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
 
-    for random_seed in range(1, n_experiments+1):
+    for model, greedy_results, random_seed in zip(models, results, random_seeds):
         set_seed(random_seed)
         
-        model = get_model(random_seed)
-        greedy_results = read_df_from_csv(greedy_result_path.format(seed=random_seed))
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_seed)
         
         model.clear_all_weight_masks()
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
-        # metrics_df.append({"Seed": random_seed, "Split": "val", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}, ignore_index=True)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
-        # metrics_df.append({"Seed": random_seed, "Split": "test", "Mask": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}, ignore_index=True)
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "Empty", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         
         model.deactivate_bottleneck_weights_if_top_k(greedy_results)
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         
-        save_model_path = add_subfolder(model.save_model_path, "/finetuned/")
+        save_model_path = add_subfolder(model.save_model_path, "finetuned")
         makedir(save_model_path)
         model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=save_model_path, max_epochs=10000, patience=10)
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Mask": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Mask": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         
     return metrics_df
 
@@ -460,20 +420,23 @@ def plot_losses(train_losses, val_losses):
     
     
 class LazyLinearWithMask(nn.LazyLinear):
-    def __init__(self, out_features, bias=True, weight_mask=None, ema_decay=0.9):
+    def __init__(self, out_features, bias=True, weight_mask=None, bias_mask=None, ema_decay=0.9):
         super().__init__(out_features, bias)
         self.cls_to_become = LazyLinearWithMask
         self.weight_mask = weight_mask
+        self.bias_mask = bias_mask
         self.ema_gradient = None
         self.ema_decay = ema_decay
     
-    def set_weight_mask(self, weight_mask):
+    def set_weight_mask(self, weight_mask = None, bias_mask = None):
         assert self.weight_mask is None or self.weight_mask.shape == self.weight.shape
         assert self.weight_mask is None or self.weight_mask.device == self.weight.device
         self.weight_mask = weight_mask
+        self.bias_mask = bias_mask
     
     def clear_weight_mask(self):
         self.weight_mask = None
+        self.bias_mask = None
     
     def update_ema_gradient(self):
         if self.ema_gradient == None:
@@ -481,26 +444,32 @@ class LazyLinearWithMask(nn.LazyLinear):
         else:
             self.ema_gradient = self.ema_decay * self.ema_gradient + (1 - self.ema_decay) * self.weight.grad.detach()
     
-    def create_weight_mask_from_ema_gradient(self):
-        pass
-    
     def forward(self, input):
         if self.weight_mask is None:
             return F.linear(input, self.weight, self.bias)
         else:
             masked_weight = self.weight * self.weight_mask
-            return F.linear(input, masked_weight, self.bias)
+            
+            if self.bias_mask is None:
+                masked_bias = self.bias
+            else:
+                masked_bias = self.bias * self.bias_mask
+            
+            return F.linear(input, masked_weight, masked_bias)
 
 
-def mask_smallest_magnitude(weight_tensor, percent=5):
+def mask_smallest_magnitude(weight_tensor, remain_active=5):
     flattened_weights = weight_tensor.flatten()
     abs_sorted_weights, sorted_indices = torch.sort(torch.abs(flattened_weights))
 
-    percentile_idx = int(len(sorted_indices) * (percent / 100))
-    threshold_index = sorted_indices[:percentile_idx]
+    if remain_active < 1:
+        idx = int(len(sorted_indices) * remain_active)
+    else:
+        idx = remain_active
+    thresholded_idx = sorted_indices[:idx]
 
     binary_mask = torch.ones_like(flattened_weights)
-    binary_mask[threshold_index] = 0
+    binary_mask[thresholded_idx] = 0
 
     weight_mask = binary_mask.reshape(weight_tensor.shape)
     bias_mask = torch.sum(weight_mask, dim=1)

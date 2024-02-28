@@ -5,7 +5,8 @@
 *.pyc
 *.txt
 /data/
-_models
+_models*
 *.png
 *.dot
 *.svg
+*.log

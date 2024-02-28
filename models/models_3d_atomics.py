@@ -19,9 +19,10 @@ from models.weights_parser import WeightsParser
 from models.differentiable_summaries import calculate_summaries
 from models.helper import *
 from models.custom_losses import compute_loss
+from models.BaseModel import BaseCBM
 
 
-class CBM(nn.Module):
+class CBM(BaseCBM):
     def __init__(self,
                 static_dim,
                 changing_dim, 
@@ -66,6 +67,7 @@ class CBM(nn.Module):
             
         """
         super(CBM, self).__init__()
+        self.architecture = "atomics"
         
         self.static_dim = static_dim
         self.changing_dim = changing_dim
@@ -100,6 +102,16 @@ class CBM(nn.Module):
         self.create_model()
         self.optimizer = torch.optim.Adam(self.parameters(), lr = opt_lr, weight_decay = opt_weight_decay)
 
+
+    def get_model_path(self, base_path, dataset, seed=None, pruning="", ending=".pt"):
+        if seed is None:
+            name = f"{self.architecture}_num_concepts_{self.num_concepts}_num_atomics_{self.num_atomics}_use_summaries_for_atomics_{self.use_summaries_for_atomics}_use_indicators_{self.use_indicators}{ending}"
+        else:
+            name = f"{self.architecture}_num_concepts_{self.num_concepts}_num_atomics_{self.num_atomics}_use_summaries_for_atomics_{self.use_summaries_for_atomics}_use_indicators_{self.use_indicators}_seed_{seed}{ending}"
+        path = os.path.join(base_path, dataset, self.architecture, pruning, name)
+        makedir(path)
+        return path
+    
     
     def create_model(self):
         self.sigmoid_layer = nn.Sigmoid()
@@ -176,40 +188,6 @@ class CBM(nn.Module):
         # self.deactivate_bottleneck_weights_if_top_k()
         return
     
-    def update_ema_gradient(self):
-        with torch.no_grad():
-            for layer in self.regularized_layers:
-                layer.update_ema_gradient()
-    
-    def clear_all_weight_masks(self):
-        for layer in self.regularized_layers:
-            layer.clear_weight_mask()
-    
-    def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
-        if top_k is not None:
-            self.top_k = top_k
-            self.top_k_num = top_k_num
-        
-        if self.top_k is not None:
-            if isinstance(self.top_k, str):
-                # if path, load df
-                self.top_k = read_df_from_csv(self.top_k)
-            
-            # init weights, needed with lazy layers
-            self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
-            
-            for i, layer in enumerate(self.regularized_layers):
-                layer_config = self.top_k[self.top_k["Layer"] == i]
-                weight_mask = torch.zeros(layer.weight.shape, dtype=torch.bool, device=layer.weight.device)
-                
-                for j, (concept_id, feat_id) in enumerate(zip(layer_config["Concept"], layer_config["Feature"]), 1):
-                    weight_mask[concept_id][feat_id] = True
-                    if j == self.top_k_num:
-                        break
-                
-                layer.set_weight_mask(weight_mask)
-        return
-    
     def forward(self, time_dependent_vars, indicators, static_vars):
         assert time_dependent_vars.dim() == 3 and time_dependent_vars.size(1) == self.seq_len and time_dependent_vars.size(2) == self.changing_dim
         assert indicators.shape == time_dependent_vars.shape
@@ -254,164 +232,3 @@ class CBM(nn.Module):
         input = self.layer_output(concepts)
         return input
     
-    def forward_probabilities(self, *data):
-        output = self(*data)
-        return self.output_af(output)
-    
-    def predict(self, *data):
-        probs = self.forward_probabilities(*data)
-        return torch.argmax(probs, dim=1)
-    
-    def forward_one_step_ahead(self, *data, steps_ahead):
-        predictions = []
-        time_dependent_vars, indicators, static_vars = data # b t v
-        
-        for _ in range(steps_ahead):
-            output = self(time_dependent_vars, indicators, static_vars) # b x v
-            output = output.unsqueeze(1) # inflate to 3d
-            predictions.append(output)
-            
-            # create indicators
-            ind = torch.isfinite(output)
-            
-            # replace previous first with new last entry, to maintain seq length
-            time_dependent_vars = torch.cat([time_dependent_vars[:, 1:, :], output], dim=1)
-            indicators = torch.cat([indicators[:, 1:, :], ind], dim=1)
-        
-        return torch.cat(predictions, axis=1)
-    
-    def argmax_to_preds(self, y_probs):
-        return torch.argmax(y_probs, dim=1)
-    
-    def _load_model(self, path, print_=True):
-        """
-        Args:
-            path (str): filepath to the model
-        """
-        try:
-            checkpoint = torch.load(path)
-        except:
-            return False
-        
-        if print_:
-            print("Loaded model from " + path)
-        
-        self.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-        self.curr_epoch = checkpoint['epoch']
-        self.train_losses = checkpoint['train_losses']
-        self.val_losses = checkpoint['val_losses']
-        
-        sleep(0.5)
-        
-        return True
-    
-    def try_load_else_fit(self, *args, **kwargs):
-        if self._load_model(kwargs.get('save_model_path')):
-            self.save_model_path = kwargs.get('save_model_path')
-            return
-        else:
-            return self.fit(*args, **kwargs)
-    
-    def fit(self, train_loader, val_loader, p_weight, save_model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, scheduler=None, trial=None):
-        """
-        Args:
-            train_loader (torch.DataLoader): 
-            val_tensor (torch.DataLoader):
-            p_weight (tensor): weight parameter used to calculate BCE loss 
-            save_model_path (str): filepath to save the model progress
-            epochs (int): number of epochs to train
-        """
-        
-        rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=max_epochs)
-        rtpt.start()
-        
-        p_weight = p_weight.to(self.device)
-        self.save_model_path = save_model_path
-        
-        self.train_losses = []
-        self.val_losses = []
-        self.curr_epoch = -1
-        
-        self.earlyStopping = EarlyStopping(patience=patience)
-        self._load_model(save_model_path)
-        
-        epochs = range(self.curr_epoch+1, max_epochs)
-        
-        with tqdm(total=len(epochs), unit=' epoch') as pbar:
-            
-            for epoch in epochs:
-                self.train()
-                train_loss = 0
-            
-                ### Train loop
-                for batch in train_loader:
-                    X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
-                                            
-                    y_pred = self(X_time, X_ind, X_static)
-
-                    loss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
-                    
-                    self.optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    
-                    if self.use_grad_norm:
-                        normalize_gradient_(self.parameters(), self.use_grad_norm)
-
-                    train_loss += loss * X_time.size(0)
-                    
-                    self.optimizer.step()
-                
-                train_loss = train_loss / len(train_loader.sampler)
-                
-                
-                if (epoch % save_every_n_epochs) == 0:
-                    self.eval()
-                    with torch.no_grad():
-                        
-                        self.train_losses.append(train_loss.item())
-                        
-                        ### Validation loop
-                        val_loss = 0
-                        for batch in val_loader:
-                            X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
-                            
-                            y_pred = self(X_time, X_ind, X_static)
-
-                            vloss = compute_loss(y_true=y_true, y_pred=y_pred, p_weight=p_weight, l1_lambda=self.l1_lambda, cos_sim_lambda=self.cos_sim_lambda, regularized_layers=self.regularized_layers, task_type=self.task_type)
-                            val_loss += vloss * X_time.size(0)
-                        
-                        val_loss = val_loss / len(val_loader.sampler)
-                        self.val_losses.append(val_loss.item())
-                        
-                        
-                        ### Auxilliary stuff
-                        state = create_state_dict(self, epoch)
-                        
-                        if self.earlyStopping.check_improvement(val_loss, state):
-                            break
-                        
-                        if scheduler:
-                            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                                scheduler.step(val_loss)
-                            else:
-                                scheduler.step()
-                        
-                        if save_model_path:
-                            torch.save(state, save_model_path)
-                        
-                        if trial:
-                            trial.report(val_loss, epoch)
-                            
-                            if trial.should_prune():
-                                raise optuna.exceptions.TrialPruned()
-                
-                pbar.set_postfix({'Train Loss': f'{train_loss.item():.5f}', 'Val Loss': f'{self.val_losses[-1]:.5f}', "Best Val Loss": f'{self.earlyStopping.min_max_criterion:.5f}'})
-                pbar.update()
-                rtpt.step(subtitle=f"loss={train_loss:2.2f}")
-            
-        if save_model_path and self.earlyStopping.best_state:
-            torch.save(self.earlyStopping.best_state, save_model_path)
-        
-        return self.val_losses[-1]

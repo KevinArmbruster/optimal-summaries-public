@@ -115,14 +115,40 @@ def get_MIMIC_dataloader(output_dim = 2, batch_size = 512, random_state = 1):
 
 def get_tiselac_dataloader(batch_size = 512, random_state = 1):
     X, y = load_classification("Tiselac", extract_path="/workdir/data")
+    
     seq_len = X.shape[2]
     changing_dim = X.shape[1]
     static_dim = 0
-    train_loader, val_loader, test_loader, class_weights, num_classes = preprocess_tiselac(X, y, batch_size, random_state)
+    
+    train_loader, val_loader, test_loader, class_weights, num_classes = preprocess(X, y, True, batch_size, random_state)
     return train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len
 
 
-def preprocess_tiselac(X_time, _y, batch_size = 512, random_state = 1):
+def get_arabic_spoken_digits_dataloader(batch_size = 512, random_state = 1):
+    X, y = load_classification("SpokenArabicDigits", extract_path="/workdir/data")
+    X = pad_to_equal_length(X)
+    
+    seq_len = X.shape[2]
+    changing_dim = X.shape[1]
+    static_dim = 0
+    
+    train_loader, val_loader, test_loader, class_weights, num_classes = preprocess(X, y, False, batch_size, random_state)
+    return train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len
+
+
+def pad_to_equal_length(X):
+    max_ts_size = max(array.shape[1] for array in X)
+    
+    equi_length_X = []
+    for x in X:
+        pad_width = ((0, 0), (0, max_ts_size - x.shape[1]))
+        padded = np.pad(x, pad_width, mode='constant', constant_values=np.nan)
+        equi_length_X.append(padded)    
+
+    return np.array(equi_length_X)
+
+
+def preprocess(X_time, _y, normalize, batch_size = 512, random_state = 1):
     # X
     X_time = rearrange(X_time, "b v t -> b t v")
     
@@ -144,10 +170,11 @@ def preprocess_tiselac(X_time, _y, batch_size = 512, random_state = 1):
     # Split
     X_time_train, X_time_test, X_ind_train, X_ind_test, y_train, y_test = train_test_split(X_time, X_ind, _y, test_size = 0.40, random_state = random_state, stratify = _y)
     X_time_test, X_time_val, X_ind_test, X_ind_val, y_test, y_val = train_test_split(X_time_test, X_ind_test, y_test, test_size = 0.50, random_state = random_state, stratify = y_test)
-
-
+    
+    
     # Normalize
-    X_time_train, X_time_val, X_time_test = normalize_across_time(X_time_train, X_time_val, X_time_test, X_time.shape[2])
+    if normalize:
+        X_time_train, X_time_val, X_time_test = normalize_across_time(X_time_train, X_time_val, X_time_test, X_time.shape[2])
     
     
     # Datasets
