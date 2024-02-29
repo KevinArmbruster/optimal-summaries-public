@@ -14,7 +14,7 @@ from models.optimization_strategy import *
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--random_seeds', type=int, nargs="+", default=[1,2,3])
+parser.add_argument('--random_states', type=int, nargs="+", default=[1,2,3])
 parser.add_argument('--dataset', type=str, choices=['mimic', 'tiselac', 'spoken_arabic_digits'])
 parser.add_argument('--model', type=str, choices=['original', 'shared', 'atomics'])
 parser.add_argument('--pruning', type=str, choices=['greedy', 'mixed_greedy', 'importance', 'sparse_learning'])
@@ -24,10 +24,10 @@ parser.add_argument('--save_load_path', type=str, default="/workdir/optimal-summ
 # configurable default model options
 parser.add_argument('--n_concepts', type=int, default=4)
 parser.add_argument('--n_atomics', type=int, default=10)
-parser.add_argument('--encode_time_dim', type=bool, default=True)
-parser.add_argument('--use_summaries_for_atomics', type=bool, default=True)
-parser.add_argument('--use_indicators', type=bool, default=True)
-parser.add_argument('--use_only_last_timestep', type=bool, default=False)
+parser.add_argument('--switch_encode_dim', action='store_false', default=True)
+parser.add_argument('--switch_summaries_layer', action='store_false', default=True)
+parser.add_argument('--switch_indicators', action='store_false', default=True)
+parser.add_argument('--switch_use_only_last_timestep', action='store_true', default=False)
 
 args = parser.parse_args()
 
@@ -36,44 +36,44 @@ for arg in vars(args):
     print(f"{arg}: {getattr(args, arg)}")
 
 
-def get_dataloader(random_seed):
-    set_seed(random_seed)
+def get_dataloader(random_state):
+    set_seed(random_state)
 
     if args.dataset == "mimic":
-        return get_MIMIC_dataloader(random_state = random_seed)
+        return get_MIMIC_dataloader(random_state = random_state)
     elif args.dataset == "tiselac":
-        return get_tiselac_dataloader(random_state = random_seed)
+        return get_tiselac_dataloader(random_state = random_state)
     elif args.dataset == "spoken_arabic_digits":
-        return get_arabic_spoken_digits_dataloader(random_state = random_seed)
+        return get_arabic_spoken_digits_dataloader(random_state = random_state)
     else:
         print("No known dataset selected")
         sys.exit(1)
 
 
-def get_model(random_seed):
-    set_seed(random_seed)
+def get_model(random_state):
+    set_seed(random_state)
     
-    train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_seed)
+    train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
     
     if args.model == "original":
-        model = models_original.CBM(n_concepts=args.n_concepts, use_indicators=args.use_indicators, use_only_last_timestep=args.use_only_last_timestep, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_original.CBM(n_concepts=args.n_concepts, use_indicators=args.switch_indicators, use_only_last_timestep=args.switch_use_only_last_timestep, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     elif args.model == "shared":
-        model = models_3d.CBM(n_concepts=args.n_concepts, encode_time_dim=args.encode_time_dim, use_indicators=args.use_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_3d.CBM(n_concepts=args.n_concepts, encode_time_dim=args.switch_encode_dim, use_indicators=args.switch_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     elif args.model == "atomics":
-        model = models_3d_atomics.CBM(n_concepts=args.n_concepts, n_atomics=args.n_atomics, use_summaries_for_atomics=args.use_summaries_for_atomics, use_indicators=args.use_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_3d_atomics.CBM(n_concepts=args.n_concepts, n_atomics=args.n_atomics, use_summaries_for_atomics=args.switch_summaries_layer, use_indicators=args.switch_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     else:
         print("No known model selected")
         sys.exit(1)
     return model
 
 
-def get_trained_model(random_seed):
-    set_seed(random_seed)
+def get_trained_model(random_state):
+    set_seed(random_state)
 
-    train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_seed)
+    train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
     
-    model = get_model(random_seed)
-    model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_seed)
+    model = get_model(random_state)
+    model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
     model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=False)
 
     evaluate_classification(model=model, dataloader=val_loader, num_classes=num_classes)
@@ -105,10 +105,10 @@ if args.pruning == "greedy":
     
     models = []
     results = []
-    for random_seed in args.random_seeds:
-        model = get_trained_model(random_seed)
+    for random_state in args.random_states:
+        model = get_trained_model(random_state)
         models.append(model)
-        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_seed)
+        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
         
         # greedy search
         track_metrics = get_metrics(num_classes)
@@ -120,7 +120,7 @@ if args.pruning == "greedy":
         greedy_results = greedy_forward_selection(model=model, layers_to_prune=model.regularized_layers, top_k_inds=top_k_inds, val_loader=val_loader, optimize_metric=track_metrics["auc"], track_metrics=track_metrics, save_path=greedy_path)
         results.append(greedy_results)
     
-    result_df = evaluate_greedy_selection(models, results, get_dataloader, random_seeds=args.random_seeds)
+    result_df = evaluate_greedy_selection(models, results, get_dataloader, dataset=args.dataset, random_states=args.random_states)
     results_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, ending="_results.csv")
     results_path = add_subfolder(results_path, "results")
     
@@ -131,10 +131,10 @@ elif args.pruning == "mixed_greedy" and args.model == "atomics":
     
     models = []
     results = []
-    for random_seed in args.random_seeds:
-        model = get_trained_model(random_seed)
+    for random_state in args.random_states:
+        model = get_trained_model(random_state)
         models.append(model)
-        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_seed)
+        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
         
         # greedy search
         track_metrics = get_metrics(num_classes)
@@ -146,23 +146,23 @@ elif args.pruning == "mixed_greedy" and args.model == "atomics":
         greedy_results = greedy_forward_selection(model=model, layers_to_prune=[model.regularized_layers[1]], top_k_inds=top_k_inds, val_loader=val_loader, optimize_metric=track_metrics["auc"], track_metrics=track_metrics, save_path=greedy_path)
         results.append(greedy_results)
     
-    result_df = evaluate_greedy_selection(models, results, get_dataloader, random_seeds=args.random_seeds)
+    result_df = evaluate_greedy_selection(models, results, get_dataloader, dataset=args.dataset, random_states=args.random_states)
     
     
 elif args.pruning == "importance":
     
-    result_df = pd.DataFrame(columns=["Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
+    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
     
-    for random_seed in args.random_seeds:
-        model = get_trained_model(random_seed)
-        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_seed)
+    for random_state in args.random_states:
+        model = get_trained_model(random_state)
+        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_state)
         model.opt_lr /= 2
         
         # base
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "importance", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "importance", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         
         
         # prune and finetune
@@ -183,26 +183,26 @@ elif args.pruning == "importance":
             model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=100, save_every_n_epochs=1, patience=10)
 
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
 
 
 elif args.pruning == "sparse_learning":
     
-    result_df = pd.DataFrame(columns=["Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
+    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
     
-    for random_seed in args.random_seeds:
+    for random_state in args.random_states:
         
-        model = get_model(random_seed)
-        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_seed)
-        model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_seed)
+        model = get_model(random_state)
+        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
+        model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
         model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=False)
         
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Seed": random_seed, "Split": "test", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         
     
 else:

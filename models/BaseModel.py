@@ -15,6 +15,15 @@ class BaseCBM(nn.Module):
         super(BaseCBM, self).__init__()
         self.save_model_path = None
     
+    def get_model_path(self, base_path, dataset, seed=None, pruning="", ending=".pt"):
+        if seed is None:
+            name = self.get_model_name() + f"{ending}"
+        else:
+            name = self.get_model_name() + f"_seed_{seed}{ending}"
+        path = os.path.join(base_path, dataset, self.architecture, pruning, name)
+        makedir(path)
+        return path
+    
     def forward_probabilities(self, *data):
         output = self(*data)
         return self.output_af(output)

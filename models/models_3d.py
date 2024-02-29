@@ -100,16 +100,11 @@ class CBM(BaseCBM):
         self.create_model()
         self.optimizer = torch.optim.Adam(self.parameters(), lr = opt_lr, weight_decay = opt_weight_decay)
 
-
-    def get_model_path(self, base_path, dataset, seed=None, pruning="", ending=".pt"):
-        if seed is None:
-            name = f"{self.architecture}_num_concepts_{self.num_concepts}_use_indicators_{self.use_indicators}_encode_time_dim_{self.encode_time_dim}{ending}"
-        else:
-            name = f"{self.architecture}_num_concepts_{self.num_concepts}_use_indicators_{self.use_indicators}_encode_time_dim_{self.encode_time_dim}_seed_{seed}{ending}"
-        path = os.path.join(base_path, dataset, self.architecture, pruning, name)
-        makedir(path)
-        return path
+    def get_model_name(self):
+        return f"{self.architecture}_num_concepts_{self.num_concepts}_use_indicators_{self.use_indicators}_encode_time_dim_{self.encode_time_dim}"
     
+    def get_short_model_name(self):
+        return f"{self.architecture}_encode_time_dim_{self.encode_time_dim}"
     
     def create_model(self):
         self.sigmoid_layer = nn.Sigmoid()
