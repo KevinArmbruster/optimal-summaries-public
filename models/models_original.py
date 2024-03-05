@@ -153,7 +153,7 @@ class CBM(BaseCBM):
         # prediction task
         self.layer_output = nn.LazyLinear(self.output_dim)
         
-        self.regularized_layers = [self.bottleneck]
+        self.regularized_layers = nn.ModuleList(self.bottleneck)
         
         self.to(device=self.device)
         # self.deactivate_bottleneck_weights_if_top_k()

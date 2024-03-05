@@ -161,7 +161,7 @@ class CBM(BaseCBM):
         # prediction task
         self.layer_output = nn.LazyLinear(self.output_dim)
         
-        self.regularized_layers = [self.bottleneck]
+        self.regularized_layers = nn.ModuleList(self.bottleneck)
         
         self.ema_gradient = {}
         for name, param in self.named_parameters():

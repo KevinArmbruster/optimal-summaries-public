@@ -219,17 +219,6 @@ class TaskType(Enum):
     REGRESSION = "Regression"
 
 
-def create_state_dict(model, epoch):
-    state = {
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': model.optimizer.state_dict(),
-                    'train_losses': model.train_losses,
-                    'val_losses': model.val_losses,
-                    }
-        
-    return state
-
 def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, seq_len = 1, use_indicators = True, str_type = 'linear'):
     if str_type == 'linear':
         time_feat_dim = 2 * changing_dim * seq_len + static_dim
@@ -255,6 +244,7 @@ def add_all_parsers(parser:WeightsParser, changing_dim, static_dim = 0, seq_len 
     parser.add_shape(str(str_type) + '_hours_above_threshold_', changing_dim)
     parser.add_shape(str(str_type) + '_hours_below_threshold_', changing_dim)
     return
+
 
 def makedir(path):
     directory = os.path.dirname(path)
@@ -420,26 +410,33 @@ def plot_losses(train_losses, val_losses):
     
     
 class LazyLinearWithMask(nn.LazyLinear):
-    def __init__(self, out_features, bias=True, weight_mask=None, bias_mask=None, ema_decay=0.9):
+    def __init__(self, out_features, bias=True, ema_decay=0.9):
         super().__init__(out_features, bias)
         self.cls_to_become = LazyLinearWithMask
-        self.weight_mask = weight_mask
-        self.bias_mask = bias_mask
+        self.weight_mask = None
+        self.bias_mask = None
         self.ema_gradient = None
         self.ema_decay = ema_decay
     
-    def set_weight_mask(self, weight_mask = None, bias_mask = None):
-        assert self.weight_mask is None or self.weight_mask.shape == self.weight.shape
-        assert self.weight_mask is None or self.weight_mask.device == self.weight.device
-        self.weight_mask = weight_mask
-        self.bias_mask = bias_mask
+    def set_weight_mask(self, weight_mask, bias_mask = None):
+        if weight_mask is None:
+            self.clear_weight_mask()
+            return
+        
+        assert weight_mask.shape == self.weight.shape
+        
+        self.weight_mask = weight_mask.to(self.weight.device)
+        
+        if bias_mask is not None:
+            assert bias_mask.shape == self.bias.shape
+            self.bias_mask = bias_mask.to(self.weight.device)
     
     def clear_weight_mask(self):
         self.weight_mask = None
         self.bias_mask = None
     
     def update_ema_gradient(self):
-        if self.ema_gradient == None:
+        if self.ema_gradient is None:
             self.ema_gradient = self.weight.grad.detach()
         else:
             self.ema_gradient = self.ema_decay * self.ema_gradient + (1 - self.ema_decay) * self.weight.grad.detach()
@@ -456,11 +453,11 @@ class LazyLinearWithMask(nn.LazyLinear):
                 masked_bias = self.bias * self.bias_mask
             
             return F.linear(input, masked_weight, masked_bias)
-
+    
 
 def mask_smallest_magnitude(weight_tensor, remain_active=5):
     flattened_weights = weight_tensor.flatten()
-    abs_sorted_weights, sorted_indices = torch.sort(torch.abs(flattened_weights))
+    _, sorted_indices = torch.sort(flattened_weights)
 
     if remain_active < 1:
         idx = int(len(sorted_indices) * remain_active)
@@ -468,8 +465,8 @@ def mask_smallest_magnitude(weight_tensor, remain_active=5):
         idx = remain_active
     thresholded_idx = sorted_indices[:idx]
 
-    binary_mask = torch.ones_like(flattened_weights)
-    binary_mask[thresholded_idx] = 0
+    binary_mask = torch.zeros_like(flattened_weights)
+    binary_mask[thresholded_idx] = 1
 
     weight_mask = binary_mask.reshape(weight_tensor.shape)
     bias_mask = torch.sum(weight_mask, dim=1)

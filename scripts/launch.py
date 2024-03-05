@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--random_states', type=int, nargs="+", default=[1,2,3])
 parser.add_argument('--dataset', type=str, choices=['mimic', 'tiselac', 'spoken_arabic_digits'])
 parser.add_argument('--model', type=str, choices=['original', 'shared', 'atomics'])
-parser.add_argument('--pruning', type=str, choices=['greedy', 'mixed_greedy', 'importance', 'sparse_learning'])
+parser.add_argument('--pruning', type=str, choices=['greedy', 'mixed_greedy', 'weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude", 'sparse_learning'])
 parser.add_argument('--device', type=str, default="cuda")
 parser.add_argument('--save_load_path', type=str, default="/workdir/optimal-summaries-public/_models2/")
 
@@ -28,6 +28,7 @@ parser.add_argument('--switch_encode_dim', action='store_false', default=True)
 parser.add_argument('--switch_summaries_layer', action='store_false', default=True)
 parser.add_argument('--switch_indicators', action='store_false', default=True)
 parser.add_argument('--switch_use_only_last_timestep', action='store_true', default=False)
+parser.add_argument('--switch_use_summaries', action='store_false', default=True)
 
 args = parser.parse_args()
 
@@ -56,11 +57,11 @@ def get_model(random_state):
     train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
     
     if args.model == "original":
-        model = models_original.CBM(n_concepts=args.n_concepts, use_indicators=args.switch_indicators, use_only_last_timestep=args.switch_use_only_last_timestep, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_original.CBM(n_concepts=args.n_concepts, use_indicators=args.switch_indicators, use_only_last_timestep=args.switch_use_only_last_timestep, use_summaries=args.switch_use_summaries, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     elif args.model == "shared":
-        model = models_3d.CBM(n_concepts=args.n_concepts, encode_time_dim=args.switch_encode_dim, use_indicators=args.switch_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_3d.CBM(n_concepts=args.n_concepts, encode_time_dim=args.switch_encode_dim, use_indicators=args.switch_indicators, use_summaries=args.switch_use_summaries, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     elif args.model == "atomics":
-        model = models_3d_atomics.CBM(n_concepts=args.n_concepts, n_atomics=args.n_atomics, use_summaries_for_atomics=args.switch_summaries_layer, use_indicators=args.switch_indicators, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
+        model = models_3d_atomics.CBM(n_concepts=args.n_concepts, n_atomics=args.n_atomics, use_summaries_for_atomics=args.switch_summaries_layer, use_indicators=args.switch_indicators, use_summaries=args.switch_use_summaries, static_dim=static_dim, changing_dim=changing_dim, seq_len=seq_len, output_dim=num_classes, device=args.device)
     else:
         print("No known model selected")
         sys.exit(1)
@@ -74,7 +75,7 @@ def get_trained_model(random_state):
     
     model = get_model(random_state)
     model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
-    model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=False)
+    model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, sparse_fit=False)
 
     evaluate_classification(model=model, dataloader=val_loader, num_classes=num_classes)
     
@@ -95,6 +96,7 @@ def get_metrics(num_classes):
         # conf_matrix = ConfusionMatrix(task="multiclass", num_classes=num_classes).to(args.device)
     
     return {"acc": accuracy_metric, "f1": f1_metric, "auc": auroc_metric}
+
 
 
 makedir(args.save_load_path)
@@ -129,6 +131,7 @@ if args.pruning == "greedy":
     
 elif args.pruning == "mixed_greedy" and args.model == "atomics":
     
+    # TODO not finished
     models = []
     results = []
     for random_state in args.random_states:
@@ -149,7 +152,7 @@ elif args.pruning == "mixed_greedy" and args.model == "atomics":
     result_df = evaluate_greedy_selection(models, results, get_dataloader, dataset=args.dataset, random_states=args.random_states)
     
     
-elif args.pruning == "importance":
+elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude"):
     
     result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
     
@@ -172,20 +175,29 @@ elif args.pruning == "importance":
         start_n_weights = [layer.weight.numel() for layer in model.regularized_layers]
         end_n_weights = [layer.weight.shape[0] * 10 for layer in model.regularized_layers] # feature budget
         
-        iterative_steps = [list(np.linspace(start, end, 5, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
+        iterative_steps = [list(np.linspace(start, end, 21, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
         
         # fill ema gradient by fit -> repeat: mask, clear, fit, evaluate
         model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1, save_every_n_epochs=1, patience=1)
         
         for step in zip(*iterative_steps):
-            model.mask_by_gradient_magnitude(step)
+            
+            if args.pruning == "weight_magnitude":
+                model.mask_by_weight_magnitude(step)
+                
+            elif args.pruning == "gradient_magnitude":
+                model.mask_by_gradient_magnitude(step)
+                
+            elif args.pruning == "weight_gradient_magnitude":
+                model.mask_by_weight_gradient_magnitude(step)
+                
             model.clear_ema_gradient()
-            model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=100, save_every_n_epochs=1, patience=10)
+            model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1000, save_every_n_epochs=1, patience=10)
 
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "importance", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
 
 
 elif args.pruning == "sparse_learning":
@@ -197,7 +209,7 @@ elif args.pruning == "sparse_learning":
         model = get_model(random_state)
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
         model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
-        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=False)
+        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=True)
         
         metrics = evaluate_classification(model, val_loader)
         result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}

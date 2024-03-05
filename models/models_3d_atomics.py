@@ -173,7 +173,7 @@ class CBM(BaseCBM):
         self.layer_output = nn.Linear(self.num_concepts, self.output_dim)
         # B x Out
         
-        self.regularized_layers = [self.layer_time_to_atomics, self.layer_to_concepts]
+        self.regularized_layers = nn.ModuleList([self.layer_time_to_atomics, self.layer_to_concepts])
         
         self.ema_gradient = {}
         for name, param in self.named_parameters():

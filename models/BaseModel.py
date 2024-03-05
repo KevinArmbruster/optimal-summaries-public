@@ -66,13 +66,20 @@ class BaseCBM(nn.Module):
     def mask_by_weight_magnitude(self, remain_active_list):
         with torch.no_grad():
             for layer, remain_active in zip(self.regularized_layers, remain_active_list):
-                weight_mask, bias_mask = mask_smallest_magnitude(layer.weight, remain_active)
+                weight_mask, bias_mask = mask_smallest_magnitude(layer.weight.abs(), remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
     def mask_by_gradient_magnitude(self, remain_active_list):
         with torch.no_grad():
             for layer, remain_active in zip(self.regularized_layers, remain_active_list):
-                weight_mask, bias_mask = mask_smallest_magnitude(layer.ema_gradient, remain_active)
+                weight_mask, bias_mask = mask_smallest_magnitude(layer.ema_gradient.abs(), remain_active)
+                layer.set_weight_mask(weight_mask, bias_mask)
+    
+    def mask_by_weight_gradient_magnitude(self, remain_active_list):
+        with torch.no_grad():
+            for layer, remain_active in zip(self.regularized_layers, remain_active_list):
+                mult = (layer.ema_gradient * layer.weight.detach()) # not abs
+                weight_mask, bias_mask = mask_smallest_magnitude(mult, remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
     def mask_shrinking_weights(self):
@@ -109,7 +116,20 @@ class BaseCBM(nn.Module):
                 
                 layer.set_weight_mask(weight_mask)
         return
-        
+    
+    def create_state_dict(self, epoch):
+        state = {
+            'epoch': epoch,
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            "weight_mask": [layer.weight_mask for layer in self.regularized_layers],
+            "bias_mask": [layer.bias_mask for layer in self.regularized_layers],
+            }
+            
+        return state
+
     def _load_model(self, path_or_checkpoint, print_=True):
         """
         Args:
@@ -126,16 +146,31 @@ class BaseCBM(nn.Module):
         except:
             return False
         
+        tmp_ema_gradients = [None if layer.ema_gradient is None else layer.ema_gradient.clone() for layer in self.regularized_layers]
+        
         self.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
+        
+        for layer, weight_mask, bias_mask, ema_gradient in zip(self.regularized_layers, checkpoint["weight_mask"], checkpoint["bias_mask"], tmp_ema_gradients):
+            layer.set_weight_mask(weight_mask, bias_mask)
+            layer.ema_gradient = ema_gradient
+        
         self.curr_epoch = checkpoint['epoch']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
         
+        # self.earlyStopping.best_state = checkpoint
+        # self.earlyStopping.min_max_criterion = self.val_losses[-1]
+        
         sleep(0.5)
         
         return True
+    
+    def init_lazy_layers_with_dummy(self, batch_size=2):
+        dummy_time = torch.randn(batch_size, self.seq_len, self.changing_dim, device=self.device)
+        dummy_ind = (~torch.isnan(dummy_time)).to(self.device, dtype=torch.float)
+        dummy_static = torch.randn(batch_size, self.static_dim, device=self.device)
+        self(dummy_time, dummy_ind, dummy_static)
     
     def try_load_else_fit(self, *args, **kwargs):
         if self._load_model(kwargs.get('save_model_path')):
@@ -153,33 +188,33 @@ class BaseCBM(nn.Module):
             save_model_path (str): filepath to save the model progress
             epochs (int): number of epochs to train
         """
-        
-        rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=max_epochs)
-        rtpt.start()
-        
         self.train_losses = []
         self.val_losses = []
-        self.curr_epoch = -1
+        self.curr_epoch = 0
         self.save_model_path = save_model_path
         p_weight = p_weight.to(self.device)
         
         self.earlyStopping = EarlyStopping(patience=patience)
         self._load_model(save_model_path)
         
+        epochs = range(self.curr_epoch, self.curr_epoch + max_epochs)
+        
         if sparse_fit:
-            T_max = len(train_loader) * max_epochs
+            self.init_lazy_layers_with_dummy() # necessary to create mask
+            T_max = len(train_loader) * len(epochs)
             decay = CosineDecay(prune_rate=0.2, T_max=T_max)
             mask = Masking(self.optimizer, prune_rate_decay=decay)
-            mask.add_module(self.bottleneck, density=0.05)
+            mask.add_module(self.regularized_layers, density=0.05)
         
-        epochs = range(self.curr_epoch+1, max_epochs)
+        rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=len(epochs))
+        rtpt.start()
         
-        with tqdm(total=len(epochs), unit=' epoch') as pbar:
+        with tqdm(iterable=epochs, unit=' epoch') as pbar:
             
             for epoch in epochs:
                 self.train()
                 train_loss = 0
-            
+                
                 ### Train loop
                 for batch in train_loader:
                     X_time, X_ind, X_static, y_true = extract_to(batch, self.device)
@@ -230,7 +265,7 @@ class BaseCBM(nn.Module):
                         
                         
                         ### Auxilliary stuff
-                        state = create_state_dict(self, epoch)
+                        state = self.create_state_dict(epoch)
                         
                         if self.earlyStopping.check_improvement(val_loss, state):
                             break
@@ -261,4 +296,3 @@ class BaseCBM(nn.Module):
             self._load_model(self.earlyStopping.best_state)
         
         return self.val_losses[-1]
-
