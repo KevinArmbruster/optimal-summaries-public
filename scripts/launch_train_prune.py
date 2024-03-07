@@ -19,7 +19,7 @@ parser.add_argument('--dataset', type=str, choices=['mimic', 'tiselac', 'spoken_
 parser.add_argument('--model', type=str, choices=['original', 'shared', 'atomics'])
 parser.add_argument('--pruning', type=str, choices=['greedy', 'mixed_greedy', 'weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude", 'sparse_learning'])
 parser.add_argument('--device', type=str, default="cuda")
-parser.add_argument('--save_load_path', type=str, default="/workdir/optimal-summaries-public/_models2/")
+parser.add_argument('--save_load_path', type=str, default="/workdir/optimal-summaries-public/_models_train_prune/")
 
 # configurable default model options
 parser.add_argument('--n_concepts', type=int, default=4)
@@ -123,49 +123,29 @@ if args.pruning == "greedy":
         results.append(greedy_results)
     
     result_df = evaluate_greedy_selection(models, results, get_dataloader, dataset=args.dataset, random_states=args.random_states)
-    results_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, ending="_results.csv")
-    results_path = add_subfolder(results_path, "results")
-    
-    write_df_2_csv(results_path, result_df)
     
     
 elif args.pruning == "mixed_greedy" and args.model == "atomics":
     
-    # TODO not finished
-    models = []
-    results = []
-    for random_state in args.random_states:
-        model = get_trained_model(random_state)
-        models.append(model)
-        train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
-        
-        # greedy search
-        track_metrics = get_metrics(num_classes)
-        top_k_inds = [get_top_features_per_concept(layer) for layer in model.regularized_layers[1]]
-        
-        greedy_path = add_subfolder(model.save_model_path, "top-k") + ".csv"
-        makedir(greedy_path)
-        
-        greedy_results = greedy_forward_selection(model=model, layers_to_prune=[model.regularized_layers[1]], top_k_inds=top_k_inds, val_loader=val_loader, optimize_metric=track_metrics["auc"], track_metrics=track_metrics, save_path=greedy_path)
-        results.append(greedy_results)
-    
-    result_df = evaluate_greedy_selection(models, results, get_dataloader, dataset=args.dataset, random_states=args.random_states)
+    # TODO not finished, replace greedy search of shared layer by importance pruning, then greedy search 2nd
+    pass
     
     
 elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude"):
     
-    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
+    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1", "Total parameter", "Remaining parameter"])
     
     for random_state in args.random_states:
         model = get_trained_model(random_state)
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_state)
-        model.opt_lr /= 2
         
         # base
+        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+        
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
         
         # prune and finetune
@@ -194,15 +174,17 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
             model.clear_ema_gradient()
             model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1000, save_every_n_epochs=1, patience=10)
 
+        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+        
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
 
 
 elif args.pruning == "sparse_learning":
     
-    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
+    result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1", "Total parameter", "Remaining parameter"])
     
     for random_state in args.random_states:
         
@@ -211,10 +193,13 @@ elif args.pruning == "sparse_learning":
         model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
         model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=True)
         
+        total = torch.sum([layer.weight.numel() for layer in model.regularized_layers]).item()
+        remaining = torch.sum([(layer.weight != 0).sum() for layer in model.regularized_layers]).item()
+        
         metrics = evaluate_classification(model, val_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "test", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
     
 else:
@@ -225,7 +210,6 @@ else:
 results_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, ending="_results.csv")
 results_path = add_subfolder(results_path, "results")
 write_df_2_csv(results_path, result_df)
-
 
 
 print("Done")

@@ -305,8 +305,17 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
     plt.legend()
     plt.show()
 
+
+def get_total_and_remaining_parameters(layers):
+    total = torch.sum([layer.weight.numel() + layer.bias.numel() for layer in layers]).item()
+    remaining = torch.sum([layer.weight_mask.sum() if layer.weight_mask is not None else layer.weight.numel() 
+                     + layer.bias_mask.sum() if layer.bias_mask is not None else layer.bias.numel() 
+                     for layer in layers]).item()
+    return total, remaining
+
+
 def evaluate_greedy_selection(models, results, get_dataloader, dataset, random_states:List[int] = [1,2,3]):
-    metrics_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1"])
+    metrics_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1", "Total parameter", "Remaining parameter"])
 
     for model, greedy_results, random_state in zip(models, results, random_states):
         set_seed(random_state)
@@ -314,27 +323,29 @@ def evaluate_greedy_selection(models, results, get_dataloader, dataset, random_s
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_state)
         
         model.clear_all_weight_masks()
+        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
         model.deactivate_bottleneck_weights_if_top_k(greedy_results)
+        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
         save_model_path = add_subfolder(model.save_model_path, "finetuned")
         makedir(save_model_path)
         model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=save_model_path, max_epochs=10000, patience=10)
         
         metrics = evaluate_classification(model, val_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         metrics = evaluate_classification(model, test_loader)
-        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2]}
+        metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Greedy", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
     return metrics_df
 

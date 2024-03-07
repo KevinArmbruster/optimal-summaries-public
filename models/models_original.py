@@ -34,7 +34,7 @@ class CBM(BaseCBM):
                 use_grad_norm = False,
                 use_summaries = True,
                 differentiate_cutoffs = True,
-                init_cutoffs_f = init_cutoffs_to_zero,
+                init_cutoffs_f = init_cutoffs_to_100perc,
                 init_lower_thresholds_f = init_rand_lower_thresholds, 
                 init_upper_thresholds_f = init_rand_upper_thresholds,
                 temperature = 0.1,
@@ -101,7 +101,7 @@ class CBM(BaseCBM):
         self.optimizer = torch.optim.Adam(self.parameters(), lr = opt_lr, weight_decay = opt_weight_decay)
 
     def get_model_name(self):
-        return f"{self.architecture}_num_concepts_{self.num_concepts}_use_indicators_{self.use_indicators}_use_only_last_timestep_{self.use_only_last_timestep}"
+        return f"{self.architecture}_num_concepts_{self.num_concepts}_use_indicators_{self.use_indicators}_use_only_last_timestep_{self.use_only_last_timestep}_use_summaries_{self.use_summaries}"
     
     def get_short_model_name(self):
         return f"{self.architecture}"
@@ -153,7 +153,7 @@ class CBM(BaseCBM):
         # prediction task
         self.layer_output = nn.LazyLinear(self.output_dim)
         
-        self.regularized_layers = nn.ModuleList(self.bottleneck)
+        self.regularized_layers = nn.ModuleList([self.bottleneck])
         
         self.to(device=self.device)
         # self.deactivate_bottleneck_weights_if_top_k()
