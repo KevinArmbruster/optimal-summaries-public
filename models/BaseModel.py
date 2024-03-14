@@ -14,13 +14,16 @@ class BaseCBM(nn.Module):
     def __init__(self):
         super(BaseCBM, self).__init__()
         self.save_model_path = None
+        self.train_losses = []
+        self.val_losses = []
+        self.curr_epoch = 0
     
     def get_model_path(self, base_path, dataset, seed=None, pruning="", ending=".pt"):
         if seed is None:
             name = self.get_model_name() + f"{ending}"
         else:
             name = self.get_model_name() + f"_seed_{seed}{ending}"
-        path = os.path.join(base_path, dataset, self.architecture, pruning, name)
+        path = os.path.join(base_path, pruning, self.architecture, dataset, name)
         makedir(path)
         return path
     
@@ -188,14 +191,11 @@ class BaseCBM(nn.Module):
             save_model_path (str): filepath to save the model progress
             epochs (int): number of epochs to train
         """
-        self.train_losses = []
-        self.val_losses = []
-        self.curr_epoch = 0
         self.save_model_path = save_model_path
         p_weight = p_weight.to(self.device)
         
         self.earlyStopping = EarlyStopping(patience=patience)
-        self._load_model(save_model_path)
+        # self._load_model(save_model_path)
         
         epochs = range(self.curr_epoch, self.curr_epoch + max_epochs)
         
@@ -288,6 +288,7 @@ class BaseCBM(nn.Module):
                 pbar.set_postfix({'Train Loss': f'{train_loss.item():.5f}', 'Val Loss': f'{self.val_losses[-1]:.5f}', "Best Val Loss": f'{self.earlyStopping.min_max_criterion:.5f}'})
                 pbar.update()
                 rtpt.step(subtitle=f"loss={train_loss:2.2f}")
+                self.curr_epoch += 1
             
             
         if save_model_path and self.earlyStopping.best_state:

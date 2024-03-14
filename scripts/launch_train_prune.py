@@ -3,6 +3,7 @@ import sys
 sys.path.append('..')
 
 import argparse
+from itertools import permutations
 
 import models.models_original as models_original
 import models.models_3d_atomics as models_3d_atomics
@@ -36,6 +37,8 @@ print("All arguments:")
 for arg in vars(args):
     print(f"{arg}: {getattr(args, arg)}")
 
+
+### Helper functions
 
 def get_dataloader(random_state):
     set_seed(random_state)
@@ -99,14 +102,16 @@ def get_metrics(num_classes):
 
 
 
-makedir(args.save_load_path)
+### Individual experiments
 
+makedir(args.save_load_path)
+models = []
 
 
 if args.pruning == "greedy":
     
-    models = []
     results = []
+    
     for random_state in args.random_states:
         model = get_trained_model(random_state)
         models.append(model)
@@ -137,10 +142,11 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
     
     for random_state in args.random_states:
         model = get_trained_model(random_state)
+        models.append(model)
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_state)
         
         # base
-        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+        total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
         result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
@@ -155,7 +161,8 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
         start_n_weights = [layer.weight.numel() for layer in model.regularized_layers]
         end_n_weights = [layer.weight.shape[0] * 10 for layer in model.regularized_layers] # feature budget
         
-        iterative_steps = [list(np.linspace(start, end, 21, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
+        amount_of_pruning_steps = 16
+        iterative_steps = [list(np.linspace(start, end, amount_of_pruning_steps, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
         
         # fill ema gradient by fit -> repeat: mask, clear, fit, evaluate
         model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1, save_every_n_epochs=1, patience=1)
@@ -172,9 +179,9 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
                 model.mask_by_weight_gradient_magnitude(step)
                 
             model.clear_ema_gradient()
-            model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1000, save_every_n_epochs=1, patience=10)
-
-        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+            model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=10000, save_every_n_epochs=1, patience=10)
+                    
+        total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
         result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": args.pruning, "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
@@ -189,12 +196,16 @@ elif args.pruning == "sparse_learning":
     for random_state in args.random_states:
         
         model = get_model(random_state)
+        models.append(model)
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
         model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
-        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=1000, save_every_n_epochs=10, patience=10, sparse_fit=True)
+        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, sparse_fit=True)
         
-        total = torch.sum([layer.weight.numel() for layer in model.regularized_layers]).item()
-        remaining = torch.sum([(layer.weight != 0).sum() for layer in model.regularized_layers]).item()
+        # sparse learning does not create weight masks, but sets weights to 0, just for identical models
+        for layer in model.regularized_layers:
+            layer.set_weight_mask_from_weight()
+        
+        total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
         result_df.loc[len(result_df)] = {"Model": model.get_short_model_name(), "Dataset": args.dataset, "Seed": random_state, "Split": "val", "Pruning": "sparse_learning", "Finetuned": True, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
@@ -207,9 +218,16 @@ else:
     sys.exit(1)
 
 
+### Compute stability
+
+jac_sim = score_pruning_stability(models)
+result_df['Jaccard Similarity'] = jac_sim
+
+
+### Write results
+
 results_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, ending="_results.csv")
 results_path = add_subfolder(results_path, "results")
 write_df_2_csv(results_path, result_df)
-
 
 print("Done")

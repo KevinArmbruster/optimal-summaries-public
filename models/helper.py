@@ -99,8 +99,8 @@ def visualize_top100_weights_per_channel(layer, top_k=100):
         plt.show()
 
 
-def jaccard_similarity(*lists):
-    sets = [set(lst) for lst in lists]
+def jaccard_similarity(list_of_lists):
+    sets = [set(lst) for lst in list_of_lists]
     
     intersection = set.intersection(*sets)
     union = set.union(*sets)
@@ -108,6 +108,24 @@ def jaccard_similarity(*lists):
     similarity = len(intersection) / len(union)
     
     return similarity
+
+
+def score_pruning_stability(models):
+    indice_set_per_model = []
+
+    for model in models:
+        first_layer = model.regularized_layers[0]
+        mask = first_layer.weight_mask.detach()
+        
+        selected_indices = []
+        for concept_id in range(mask.shape[0]):
+            selected_indices.extend(torch.nonzero(mask[concept_id], as_tuple=False).flatten().tolist())
+        selected_indices = set(selected_indices)
+        
+        indice_set_per_model.append(selected_indices)
+    
+    jac_sim = jaccard_similarity(indice_set_per_model)
+    return jac_sim
 
 
 def extract_to(batch, device):
@@ -306,11 +324,13 @@ def visualize_optimization_results(model, val_loader, test_loader, greedy_result
     plt.show()
 
 
-def get_total_and_remaining_parameters(layers):
-    total = torch.sum([layer.weight.numel() + layer.bias.numel() for layer in layers]).item()
-    remaining = torch.sum([layer.weight_mask.sum() if layer.weight_mask is not None else layer.weight.numel() 
-                     + layer.bias_mask.sum() if layer.bias_mask is not None else layer.bias.numel() 
-                     for layer in layers]).item()
+def get_total_and_remaining_parameters_from_masks(layers):
+    total = sum([layer.weight.numel() + layer.bias.numel() for layer in layers])
+    remaining = sum([
+        (layer.weight_mask.sum().item() if layer.weight_mask is not None else layer.weight.numel()) +
+        (layer.bias_mask.sum().item() if layer.bias_mask is not None else layer.bias.numel())
+        for layer in layers
+    ])
     return total, remaining
 
 
@@ -323,7 +343,7 @@ def evaluate_greedy_selection(models, results, get_dataloader, dataset, random_s
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state = random_state)
         
         model.clear_all_weight_masks()
-        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+        total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
         metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
@@ -331,7 +351,7 @@ def evaluate_greedy_selection(models, results, get_dataloader, dataset, random_s
         metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "test", "Pruning": "Before", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
         
         model.deactivate_bottleneck_weights_if_top_k(greedy_results)
-        total, remaining = get_total_and_remaining_parameters(model.regularized_layers)
+        total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)
         metrics_df.loc[len(metrics_df)] = {"Model": model.get_short_model_name(), "Dataset": dataset, "Seed": random_state, "Split": "val", "Pruning": "Greedy", "Finetuned": False, "AUC": metrics[0], "ACC": metrics[1], "F1": metrics[2], "Total parameter": total, "Remaining parameter": remaining}
@@ -431,16 +451,18 @@ class LazyLinearWithMask(nn.LazyLinear):
     
     def set_weight_mask(self, weight_mask, bias_mask = None):
         if weight_mask is None:
-            self.clear_weight_mask()
             return
         
         assert weight_mask.shape == self.weight.shape
-        
         self.weight_mask = weight_mask.to(self.weight.device)
         
         if bias_mask is not None:
             assert bias_mask.shape == self.bias.shape
             self.bias_mask = bias_mask.to(self.weight.device)
+    
+    def set_weight_mask_from_weight(self):
+        self.weight_mask = (self.weight != 0).int()
+        self.bias_mask = (self.bias != 0).int()
     
     def clear_weight_mask(self):
         self.weight_mask = None
