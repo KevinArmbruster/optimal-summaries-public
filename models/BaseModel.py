@@ -75,7 +75,7 @@ class BaseCBM(nn.Module):
     def mask_by_importance(self, remain_active_list):
         with torch.no_grad():
             for layer, remain_active in zip(self.regularized_layers, remain_active_list):
-                importance = layer.ema_gradient * (layer.weight.detach()**2)
+                importance = (layer.ema_gradient * layer.weight.detach())**2
                 weight_mask, bias_mask = mask_smallest_magnitude(importance, remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
