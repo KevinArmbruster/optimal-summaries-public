@@ -95,13 +95,13 @@ def create_MIMIC_datasets(X_time, X_ind, X_static, _Y_logits, output_dim = 2, ba
     
     # Dataloaders
     train_dataset = TensorDataset(X_time_train, X_ind_train, X_static_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=0)
 
     val_dataset = TensorDataset(X_time_val, X_ind_val, X_static_val, y_val)
-    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
 
     test_dataset = TensorDataset(X_time_test, X_ind_test, X_static_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
     
     return train_loader, val_loader, test_loader, class_weights, num_classes
 
@@ -193,13 +193,13 @@ def preprocess(X_time, _y, normalize, batch_size = 512, random_state = 1):
 
     # Dataloaders
     train_dataset = TensorDataset(X_time_train, X_ind_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=0)
 
     val_dataset = TensorDataset(X_time_val, X_ind_val, y_val)
-    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
 
     test_dataset = TensorDataset(X_time_test, X_ind_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
     
     
     return train_loader, val_loader, test_loader, weights, num_classes
