@@ -172,7 +172,6 @@ class CBM(BaseCBM):
         return
     
     def forward(self, time_dependent_vars, indicators, static_vars):
-        print()
         assert time_dependent_vars.dim() == 3 and time_dependent_vars.size(1) == self.seq_len and time_dependent_vars.size(2) == self.changing_dim
         assert indicators.shape == time_dependent_vars.shape
         assert torch.equal(static_vars, torch.empty(0, device=self.device)) or (static_vars.dim() == 2 and static_vars.size(1) == self.static_dim)
