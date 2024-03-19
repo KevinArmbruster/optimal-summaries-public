@@ -18,13 +18,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--random_states', type=int, nargs="+", default=[1,2,3])
 parser.add_argument('--dataset', type=str, choices=['mimic', 'tiselac', 'spoken_arabic_digits'])
 parser.add_argument('--model', type=str, choices=['original', 'shared', 'atomics'])
-parser.add_argument('--pruning', type=str, choices=['greedy', 'mixed_greedy', 'weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude", 'sparse_learning'])
+parser.add_argument('--pruning', type=str, choices=['greedy', 'weight_magnitude', "importance", "movement", 'sparse_learning'])
 parser.add_argument('--device', type=str, default="cuda")
 parser.add_argument('--save_load_path', type=str, default="/workdir/optimal-summaries-public/_models_train_prune/")
 
 # configurable default model options
 parser.add_argument('--n_concepts', type=int, default=4)
-parser.add_argument('--n_atomics', type=int, default=10)
+parser.add_argument('--n_atomics', type=int, default=4)
 parser.add_argument('--switch_encode_dim', action='store_false', default=True)
 parser.add_argument('--switch_summaries_layer', action='store_false', default=True)
 parser.add_argument('--switch_indicators', action='store_false', default=True)
@@ -136,7 +136,7 @@ elif args.pruning == "mixed_greedy" and args.model == "atomics":
     pass
     
     
-elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient_magnitude"):
+elif args.pruning in ('weight_magnitude', "importance", "movement"):
     
     result_df = pd.DataFrame(columns=["Model", "Dataset", "Seed", "Split", "Pruning", "Finetuned", "AUC", "ACC", "F1", "Total parameter", "Remaining parameter"])
     
@@ -161,8 +161,8 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
         start_n_weights = [layer.weight.numel() for layer in model.regularized_layers]
         end_n_weights = [layer.weight.shape[0] * 10 for layer in model.regularized_layers] # feature budget
         
-        amount_of_pruning_steps = 16
-        iterative_steps = [list(np.linspace(start, end, amount_of_pruning_steps, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
+        amount_of_pruning_steps = 20 # equals 5% of neurons per step
+        iterative_steps = [list(np.linspace(start, end, amount_of_pruning_steps +1, dtype=int))[1:] for start, end in zip(start_n_weights, end_n_weights)]
         
         # fill ema gradient by fit -> repeat: mask, clear, fit, evaluate
         model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=1, save_every_n_epochs=1, patience=1)
@@ -172,15 +172,15 @@ elif args.pruning in ('weight_magnitude', "gradient_magnitude", "weight_gradient
             if args.pruning == "weight_magnitude":
                 model.mask_by_weight_magnitude(step)
                 
-            elif args.pruning == "gradient_magnitude":
-                model.mask_by_gradient_magnitude(step)
+            elif args.pruning == "importance":
+                model.mask_by_importance(step)
                 
-            elif args.pruning == "weight_gradient_magnitude":
-                model.mask_by_weight_gradient_magnitude(step)
+            elif args.pruning == "movement":
+                model.mask_by_movement(step)
                 
             model.clear_ema_gradient()
             model.fit(train_loader, val_loader, p_weight=class_weights, save_model_path=new_model_path, max_epochs=10000, save_every_n_epochs=1, patience=10)
-                    
+        
         total, remaining = get_total_and_remaining_parameters_from_masks(model.regularized_layers)
         
         metrics = evaluate_classification(model, val_loader)

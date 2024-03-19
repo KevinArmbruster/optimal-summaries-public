@@ -72,17 +72,18 @@ class BaseCBM(nn.Module):
                 weight_mask, bias_mask = mask_smallest_magnitude(layer.weight.abs(), remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
-    def mask_by_gradient_magnitude(self, remain_active_list):
+    def mask_by_importance(self, remain_active_list):
         with torch.no_grad():
             for layer, remain_active in zip(self.regularized_layers, remain_active_list):
-                weight_mask, bias_mask = mask_smallest_magnitude(layer.ema_gradient.abs(), remain_active)
+                importance = layer.ema_gradient * (layer.weight.detach()**2)
+                weight_mask, bias_mask = mask_smallest_magnitude(importance, remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
-    def mask_by_weight_gradient_magnitude(self, remain_active_list):
+    def mask_by_movement(self, remain_active_list):
         with torch.no_grad():
             for layer, remain_active in zip(self.regularized_layers, remain_active_list):
-                mult = (layer.ema_gradient * layer.weight.detach()) # not abs
-                weight_mask, bias_mask = mask_smallest_magnitude(mult, remain_active)
+                movement = (layer.ema_gradient * layer.weight.detach()) # not abs
+                weight_mask, bias_mask = mask_smallest_magnitude(movement, remain_active)
                 layer.set_weight_mask(weight_mask, bias_mask)
     
     def mask_shrinking_weights(self):

@@ -105,7 +105,10 @@ def jaccard_similarity(list_of_lists):
     intersection = set.intersection(*sets)
     union = set.union(*sets)
     
-    similarity = len(intersection) / len(union)
+    if len(union) == 0:
+        similarity = 0
+    else:
+        similarity = len(intersection) / len(union)
     
     return similarity
 
