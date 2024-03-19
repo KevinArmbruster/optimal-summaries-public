@@ -95,7 +95,7 @@ class BaseCBM(nn.Module):
     def clear_all_weight_masks(self):
         for layer in self.regularized_layers:
             layer.clear_weight_mask()
-    
+        
     def deactivate_bottleneck_weights_if_top_k(self, top_k = None, top_k_num = np.inf):
         if top_k is not None:
             self.top_k = top_k
@@ -106,8 +106,7 @@ class BaseCBM(nn.Module):
                 # if path, load df
                 self.top_k = read_df_from_csv(self.top_k)
             
-            # init weights, needed with lazy layers
-            self(torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.seq_len, self.changing_dim, device=self.device), torch.zeros(2, self.static_dim, device=self.device))
+            self.init_lazy_layers_with_dummy()
             
             for i, layer in enumerate(self.regularized_layers):
                 layer_config = self.top_k[self.top_k["Layer"] == i]
@@ -183,7 +182,7 @@ class BaseCBM(nn.Module):
         else:
             return self.fit(*args, **kwargs)
     
-    def fit(self, train_loader, val_loader, p_weight=None, save_model_path=None, max_epochs=1000, save_every_n_epochs=10, patience=10, scheduler=None, trial=None, sparse_fit=False):
+    def fit(self, train_loader, val_loader, p_weight=None, save_model_path=None, max_epochs=1000, save_every_n_epochs=10, patience=10, scheduler=None, trial=None, sparse_fit=False, density=0.05, prune_rate=0.2):
         """
         Args:
             train_loader (torch.DataLoader): 
@@ -203,9 +202,9 @@ class BaseCBM(nn.Module):
         if sparse_fit:
             self.init_lazy_layers_with_dummy() # necessary to create mask
             T_max = len(train_loader) * len(epochs)
-            decay = CosineDecay(prune_rate=0.2, T_max=T_max)
+            decay = CosineDecay(prune_rate=prune_rate, T_max=T_max)
             mask = Masking(self.optimizer, prune_rate_decay=decay)
-            mask.add_module(self.regularized_layers, density=0.05)
+            mask.add_module(self.regularized_layers, density=density)
         
         rtpt = RTPT(name_initials='KA', experiment_name='TimeSeriesCBM', max_iterations=len(epochs))
         rtpt.start()

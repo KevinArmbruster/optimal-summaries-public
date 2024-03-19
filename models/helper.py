@@ -197,7 +197,7 @@ def normalize_gradient_(params, norm_type, p_norm_type=2):
     return
 
 
-def evaluate_classification(model, dataloader, num_classes = 2, average = "macro"):
+def evaluate_classification(model, dataloader, average = "macro"):
     device = model.device
     num_classes = model.output_dim
     

@@ -199,7 +199,12 @@ elif args.pruning == "sparse_learning":
         models.append(model)
         train_loader, val_loader, test_loader, class_weights, num_classes, changing_dim, static_dim, seq_len = get_dataloader(random_state)
         model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
-        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, sparse_fit=True)
+        
+        model.init_lazy_layers_with_dummy()
+        
+        density = 40 / model.regularized_layers[-1].weight.numel() # equivalent of feature budget = 40
+        
+        model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, sparse_fit=True, density=density)
         
         # sparse learning does not create weight masks, but sets weights to 0, just for identical models
         for layer in model.regularized_layers:
