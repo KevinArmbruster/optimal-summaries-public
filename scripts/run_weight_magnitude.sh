@@ -17,7 +17,7 @@ nohup python3 launch_train_prune.py --dataset mimic --model atomics --pruning we
 sleep 10
 
 # Run commands for tiselac dataset
-device="cuda:9"
+device="cuda:7"
 nohup python3 launch_train_prune.py --dataset tiselac --model original --pruning weight_magnitude --device "$device" > $log_path/tiselac_original_weight_magnitude.log 2>&1 &
 nohup python3 launch_train_prune.py --dataset tiselac --model shared --pruning weight_magnitude --device "$device" > $log_path/tiselac_shared_weight_magnitude.log 2>&1 &
 nohup python3 launch_train_prune.py --dataset tiselac --model atomics --pruning weight_magnitude --device "$device" > $log_path/tiselac_atomics_weight_magnitude.log 2>&1 &

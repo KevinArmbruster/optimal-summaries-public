@@ -80,7 +80,7 @@ def get_trained_model(random_state):
     model_path = model.get_model_path(base_path=args.save_load_path, dataset=args.dataset, pruning=args.pruning, seed=random_state)
     model.try_load_else_fit(train_loader, val_loader, p_weight=class_weights, save_model_path=model_path, max_epochs=10000, save_every_n_epochs=10, patience=10, sparse_fit=False)
 
-    evaluate_classification(model=model, dataloader=val_loader, num_classes=num_classes)
+    evaluate_classification(model, val_loader)
     
     return model
 
@@ -132,7 +132,7 @@ if args.pruning == "greedy":
     
 elif args.pruning == "mixed_greedy" and args.model == "atomics":
     
-    # TODO not finished, replace greedy search of shared layer by importance pruning, then greedy search 2nd
+    # TODO replace greedy search of atomics layer by importance pruning, then greedy search concepts
     pass
     
     
