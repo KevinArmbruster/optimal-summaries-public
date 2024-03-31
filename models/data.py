@@ -42,6 +42,13 @@ MIMIC_changing_vars = [
  'hgb',
  'bilirubin_total']
 
+MIMIC_long_var_names = ["Diastolic Blood Pressure", "Fraction Inspired Oxygen", "Glasgow Coma Scale Total", "Heart Rate", 
+ "Pulmonary Artery Pressure Mean", "Systolic Blood Pressure", "Respiratory Rate", "Oxygen Saturation",
+ "Temperature", "Blood Urea Nitrogen", "Magnesium", "Platelets", "Sodium", "Alanine Aminotransferase",
+ "Hematocrit", "Partial Pressure of Oxygen", "Aspartate Aminotransferase", "Potassium", "White Blood Cell Count",
+ "Bicarbonate", "Creatinine", "Lactate", "Partial Pressure of Carbon Dioxide", "Glucose", "Prothrombin Time INR",
+ "Hemoglobin", "Bilirubin"]
+
 
 def load_MIMIC_data():
     X_time = np.load("/workdir/data/mimic-iii/vasopressor-X_time.npy")

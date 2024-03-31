@@ -1,3 +1,7 @@
+
+[Top-level README](../README.md)
+
+
 # Sparse Learning Library and Sparse Momentum Resources
 
 This repo contains a sparse learning library which allows you to wrap any PyTorch neural network with a sparse mask to emulate the training of sparse neural networks. It also contains the code to replicate our work [Sparse Networks from Scratch: Faster Training without Losing Performance](https://arxiv.org/abs/1907.04840).
